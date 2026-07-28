@@ -511,43 +511,24 @@ async function captchaLogin(userId, chatId, phone, password, bot, logBoth) {
     // CHANGE 3: Token capture same as un original code
     // ============================================================
     
-    const browser = await puppeteer.launch({
-        headless: false,
-        executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-blink-features=AutomationControlled',
-            '--window-size=1280,800'
-        ]
-    });
-    
-    let capturedToken = null;
-    
-    try {
-        const page = await browser.newPage();
-        
-        // === ANTI-DETECTION ===
-        await page.evaluateOnNewDocument(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-            window.chrome = { runtime: {} };
-        });
-        
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-        await page.setViewport({ width: 1280, height: 800 });
-        
-        // === TOKEN CAPTURE FROM GetBalance (same as your original code) ===
-        await page.setRequestInterception(true);
-        page.on('request', (req) => {
-            if (req.url().includes('GetBalance') && req.headers()['authorization']) {
-                capturedToken = req.headers()['authorization'].replace(/^Bearer\s+/i, "");
-                console.log('[LOGIN] ✅ Token captured from GetBalance request!');
-            }
-            req.continue();
-        });
-        
+    let browser;
+     try {
+         browser = await puppeteer.launch({
+             headless: true, 
+             args: ['--no-sandbox', '--disable-setuid-sandbox', '--single-process', '--disable-gpu']
+         });
+         const page = await browser.newPage();
+         await page.setDefaultNavigationTimeout(90000); 
+         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+ 
+         let capturedToken = null;
+         await page.setRequestInterception(true);
+         page.on('request', (req) => {
+             if (req.url().includes('GetBalance') && req.headers()['authorization']) {
+                 capturedToken = req.headers()['authorization'].replace(/^Bearer\s+/i, "");
+             }
+             req.continue();
+         });
         // Navigate to login page
         await page.goto('https://goaokk.com/#/login', { 
             waitUntil: 'domcontentloaded', 
