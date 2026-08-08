@@ -925,18 +925,15 @@ function buildLevelAnalysis(pt, maxShow){
     };
 }
 
-// ============================================================
-//  STATS & REPORT HELPERS
-// ============================================================
-function showStats(chatId, userId) {
-    const d = stats[userId], rate = d.total ? ((d.win / d.total) * 100).toFixed(1) : "0.0";
+function showStats(chatId,userId){
+    const d=stats[userId],rate=d.total?((d.win/d.total)*100).toFixed(1):"0.0";
     const pt2 = profitTrack[userId] || {};
-    const predRate = pt2.predTotal ? ((pt2.predWins / pt2.predTotal) * 100).toFixed(1) : "0.0";
-    const predBar = "🟦".repeat(pt2.predTotal ? Math.round(pt2.predWins / pt2.predTotal * 10) : 0) + "⬜".repeat(pt2.predTotal ? 10 - Math.round(pt2.predWins / pt2.predTotal * 10) : 10);
-    const bar = "🟦".repeat(d.total ? Math.round(d.win / d.total * 10) : 0) + "⬜".repeat(d.total ? 10 - Math.round(d.win / d.total * 10) : 10);
+    const predRate = pt2.predTotal ? ((pt2.predWins/pt2.predTotal)*100).toFixed(1) : "0.0";
+    const predBar = "🟦".repeat(pt2.predTotal?Math.round(pt2.predWins/pt2.predTotal*10):0)+"⬜".repeat(pt2.predTotal?10-Math.round(pt2.predWins/pt2.predTotal*10):10);
+    const bar="🟦".repeat(d.total?Math.round(d.win/d.total*10):0)+"⬜".repeat(d.total?10-Math.round(d.win/d.total*10):10);
     
+    let levelReport = "📊 LEVEL CHART:\n";
     const pt = profitTrack[userId];
-    let levelReport = "";
     if (pt && pt.levelStats) {
         const maxReached = Math.max(...Object.keys(pt.levelStats).map(Number), 1);
         let levelLines = [];
@@ -946,16 +943,14 @@ function showStats(chatId, userId) {
                 levelLines.push(`L${i}:${ls.wins}`);
             }
         }
-        if (levelLines.length > 0) {
-            levelReport = "📊 LEVEL CHART:\n" + levelLines.join(" ") + "\n";
-        }
+        levelReport += levelLines.join(" ") + "\n";
     }
 
     const la = buildLevelAnalysis(pt, 20);
     let laReport = "";
     if (la.lines.length > 0) {
-        laReport = "📊 LVL Success: " + la.lines.join(" | ") + "\n" +
-                   "💰 Lvl P&L: " + (la.totalProfit >= 0 ? "+" : "") + la.totalProfit.toFixed(2) + "\n";
+        laReport = "📊 LVL (Bet Success): " + la.lines.join(" | ") + "\n";
+        laReport += "💰 Lvl P&L: " + (la.totalProfit >= 0 ? "+" : "") + la.totalProfit.toFixed(2) + "\n";
     }
 
     let allLvlStr = "";
@@ -966,27 +961,11 @@ function showStats(chatId, userId) {
             const p = pt2.predLevel[i];
             if (p && p.total > 0) pLines.push("L" + i + ": " + p.wins + "W");
         }
-        if (pLines.length > 0) {
-            allLvlStr = pLines.join(" ") + "\n";
-        }
+        allLvlStr = pLines.length ? pLines.join(" ") + "\n" : "";
     }
 
-    let statsMessage = 
-        "📊 **STATS**\n" +
-        "Total: " + d.total + " | Wins: " + d.win + " | Losses: " + d.loss + "\n" +
-        "Acc: " + rate + "%\n" +
-        bar + "\n" +
-        (levelReport ? "\n" + levelReport : "") +
-        (laReport ? "\n" + laReport : "") +
-        "\nStreak ➔ Best: " + d.maxWinStreak + " | Worst: " + d.maxLossStreak + "\n\n" +
-        "📈 **ALL PREDICTIONS (Bet+Watch+Skip)**\n" +
-        "Total: " + pt2.predTotal + " | Wins: " + pt2.predWins + " | Loss: " + pt2.predLosses + "\n" +
-        "Acc: " + predRate + "%\n" +
-        predBar + "\n" +
-        (allLvlStr ? "\n" + allLvlStr : "") +
-        "Streak ➔ Best W: " + pt2.predMaxW + " | Worst L: " + pt2.predMaxL;
-
-    send(chatId, statsMessage);
+    send(chatId,"📊 STATS\n\nTotal: "+d.total+"\nWins: "+d.win+"\nLosses: "+d.loss+"\nAcc: "+rate+"%\n"+bar+"\n\n" + levelReport + "\n" + laReport + "\nBest Win: "+d.maxWinStreak+" streak\nWorst Loss: "+d.maxLossStreak+" streak"+
+    "\n\n📈 ALL PREDICTIONS (Bet+Watch+Skip):\nTotal: "+pt2.predTotal+"\nWins: "+pt2.predWins+"\nLoss: "+pt2.predLosses+"\nAcc: "+predRate+"%\n"+predBar+"\n"+allLvlStr+"Best W: "+pt2.predMaxW+" | Worst L: "+pt2.predMaxL);
 }
 
 async function profitReport(chatId,userId){
