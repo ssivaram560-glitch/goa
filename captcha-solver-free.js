@@ -511,39 +511,77 @@ async function captchaLogin(userId, chatId, phone, password, bot, logBoth) {
     // CHANGE 3: Token capture same as un original code
     // ============================================================
     
-    let browser;
-     try {
-         browser = await puppeteer.launch({
-             headless: true, 
-             args: ['--no-sandbox', '--disable-setuid-sandbox', '--single-process', '--disable-gpu']
-         });
-         const page = await browser.newPage();
-         await page.setDefaultNavigationTimeout(90000); 
-         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
- 
-         let capturedToken = null;
-         await page.setRequestInterception(true);
-         page.on('request', (req) => {
-             if (req.url().includes('GetBalance') && req.headers()['authorization']) {
-                 capturedToken = req.headers()['authorization'].replace(/^Bearer\s+/i, "");
-             }
-             req.continue();
-         });
+    const browser = await puppeteer.launch({
+        headless: false,
+        executablePath: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-blink-features=AutomationControlled',
+            '--window-size=1280,800'
+        ]
+    });
+    
+    let capturedToken = null;
+    
+    try {
+        const page = await browser.newPage();
+        
+        // === ANTI-DETECTION ===
+        await page.evaluateOnNewDocument(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            window.chrome = { runtime: {} };
+        });
+        
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        await page.setViewport({ width: 1280, height: 800 });
+        
+        // === TOKEN CAPTURE FROM GetBalance (same as your original code) ===
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+            if (req.url().includes('GetBalance') && req.headers()['authorization']) {
+                capturedToken = req.headers()['authorization'].replace(/^Bearer\s+/i, "");
+                console.log('[LOGIN] ✅ Token captured from GetBalance request!');
+            }
+            req.continue();
+        });
+        
         // Navigate to login page
+       // Navigate to login page
         await page.goto('https://goaokk.com/#/login', { 
             waitUntil: 'domcontentloaded', 
             timeout: 90000 
         });
         
-        await page.waitForSelector('input', { timeout: 30000 });
+        // Correct input selectors-ah wait panni type pannalam
+        await page.waitForSelector('input[type="text"], input[type="tel"], input[placeholder*="Phone"], input', { timeout: 30000 });
         await sleep(1000);
         
-        const inputs = await page.$$('input');
-        if (inputs.length < 2) throw new Error("Login inputs not found");
-        
-        await inputs[0].type(phone, { delay: 50 });
-        await inputs[1].type(password, { delay: 50 });
-        
+        // Specific selector use panni phone matrum password-ah type seyyalam
+        // Phone number input field
+        const phoneInput = await page.$('input[placeholder*="number"], input[type="tel"], .van-field__control');
+        if (phoneInput) {
+            await phoneInput.click({ clickCount: 3 }); // Irruntha text-ah clear panna
+            await phoneInput.press('Backspace');
+            await phoneInput.type(phone, { delay: 50 });
+        } else {
+            // Fallback to index if specific not found
+            const inputs = await page.$$('input');
+            await inputs[1].type(phone, { delay: 50 });
+        }
+
+        await sleep(500);
+
+        // Password input field
+        const passwordInput = await page.$('input[type="password"]');
+        if (passwordInput) {
+            await passwordInput.type(password, { delay: 50 });
+        } else {
+            const inputs = await page.$$('input');
+            await inputs[2].type(password, { delay: 50 });
+        }
         // Click Login button
         await page.evaluate(() => {
             const btns = Array.from(document.querySelectorAll('button'));
@@ -611,7 +649,7 @@ async function captchaLogin(userId, chatId, phone, password, bot, logBoth) {
         // This triggers the GetBalance API call which has the token
         
         try {
-            await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 45000 });
+            await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 });
         } catch (e) {
             // Ignore timeout
         }
