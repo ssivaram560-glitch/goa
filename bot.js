@@ -689,20 +689,17 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
                 st.consecutiveLoss++;
                 st.level++;
                 
-                // 🔥 FIXED: When consecutiveLoss reaches 5, trigger 5 skips but KEEP the current st.level (do NOT reset level to 1!).
-                // Also reset consecutiveLoss or keep it so watch loss won't trigger immediately after skips.
-                if (st.consecutiveLoss >= 5) {
-                    state.isSkipping = true;
-                    state.skipCount = 1;
-                    st.consecutiveLoss = 0; // Prevent watch loss immediately after 5 skips, maintaining level & continuity!
-                }
-
+                // 🔥 FIXED: Skip logic & level maintenance.
+                // Skip only happens after max level loss (5th level loss).
                 if (st.level > cfg.maxLvl) {
                     st.level = 1;
                     st.consecutiveLoss = 0;
+                    state.isSkipping = true;
+                    state.skipCount = 1;
                 }
             }
         } else {
+            // Watch mode (bet kattatha podhu)
             if (cfg && cfg.watch) {
                 if (wasWin) {
                     st.consecutiveLoss = 0; 
@@ -837,7 +834,8 @@ async function runPredict(userId, chatId) {
     } else if (!cfg || !cfg.enabled) {
         abLine = "🤖 AutoBet: OFF";
         canBet = false;
-    } else if (cfg.watch && st.consecutiveLoss < cfg.watchLoss) {
+    } else if (cfg.watch && st.level === 1 && st.consecutiveLoss < cfg.watchLoss) {
+        // Watch mode is ONLY checked before Level 1
         abLine = `👀 WATCHING: ${st.consecutiveLoss}/${cfg.watchLoss}`;
         canBet = false;
     } else {
@@ -847,7 +845,7 @@ async function runPredict(userId, chatId) {
     }
 
     const patternName = signal && signal.pat ? signal.pat : (state && state.mode ? state.mode : "NORMAL");
-    const waitLine = (cfg && cfg.watch && st.consecutiveLoss < cfg.watchLoss) ? "\nWatch Loss: " + st.consecutiveLoss + "/" + cfg.watchLoss : "";
+    const waitLine = (cfg && cfg.watch && st.level === 1 && st.consecutiveLoss < cfg.watchLoss) ? "\nWatch Loss: " + st.consecutiveLoss + "/" + cfg.watchLoss : "";
 
     await send(chatId,
 "╔══════════════════════════╗\n"+
