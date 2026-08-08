@@ -22,7 +22,7 @@ const CAPTCHA_URL = "https://api.goa7777.com/api/webapi/Captcha";
 const DRAW_URL    = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json";
 
 // Martingale multipliers — user can customize base bet
-const MULT = [1, 3, 9, 27, 81, 243, 729, 2187, 6561, 19683]; // Standard 3x Martingale multipliers
+const MULT = [1, 3, 9, 27, 81, 243, 729, 2187, 6561, 19683];
 
 // ============================================================
 //  RENDER KEEP-ALIVE
@@ -61,22 +61,21 @@ let autobetCfg     = {};
 let autobetState   = {};
 let profitTrack    = {};
 let GLOBAL_TOKEN   = "";
-let userTokens = {}; 
-
+let userTokens     = {}; 
+let userStates     = {};
 
 // ============================================================
-//  LOGGING HELPER (New)
+//  LOGGING HELPER
 // ============================================================
 async function logBoth(chatId, msg, isError = false) {
     if (isError) console.error(msg);
     else console.log(msg);
     if (chatId) {
-        // Use the global bot instance if available
         if (bot) {
             try {
                 await bot.sendMessage(chatId, msg);
             } catch (e) {
-                // Ignore message sending errors to prevent loops
+                // Ignore
             }
         }
     }
@@ -106,7 +105,7 @@ async function fetchList() {
         return null;
     }
 }
-// Helper parser function
+
 async function parseBalanceResponse(r) {
     if (r.data && r.data.code === 0 && r.data.data && typeof r.data.data.balance !== 'undefined') {
         return { success: true, balance: r.data.data.balance };
@@ -119,13 +118,10 @@ async function parseBalanceResponse(r) {
 
 async function getLiveBalance(userId, chatId = null) {
     let token = getToken(userId);
-    
-    // Optional: Auto login if token is missing
     if (!token && chatId) {
         const ok = await autoLogin(userId, chatId, true);
         if (ok) token = getToken(userId);
     }
-
     if (!token) return { success: false, message: "No token" };
 
     const url = "https://api.goa7777.com/api/webapi/GetBalance";
@@ -155,7 +151,7 @@ async function getLiveBalance(userId, chatId = null) {
 
 function initUser(id) {
     if (!stats[id])        stats[id]        = { total:0,win:0,loss:0,lossStreak:0,winStreak:0,maxWinStreak:0,maxLossStreak:0 };
-   if (!userStates[id])   userStates[id]   = { resultHistory:[], skipCount:0, currentMode:null, lastPrediction:null };
+    if (!userStates[id])   userStates[id]   = { resultHistory:[], skipCount:0, currentMode:null, lastPrediction:null, isSkipping:false };
     if (!sentPeriods[id])  sentPeriods[id]  = new Set();
     if (!autobetCfg[id])   autobetCfg[id]   = { 
         watch:false, 
@@ -164,16 +160,16 @@ function initUser(id) {
         maxLvl:5, 
         enabled:false, 
         customBets:[1,3,9,27,81],
-        targetProfit: 1000,    // NEW: Profit target set panna
-        restartDelay: 1        // NEW: Restart time (hours) set panna
+        targetProfit: 1000,
+        restartDelay: 1
     };
     if (!autobetState[id]) autobetState[id] = { 
         level:1, 
-        virtualLevel:1,        // NEW: Stats track panna virtual level
+        virtualLevel:1,
         consecutiveLoss:0, 
         inMart:false,
-        isWaiting: false,      // NEW: Bot waiting-la irukka-nu check panna
-        nextStartTime: null    // NEW: Thirumba eppo start aakanum-nu store panna
+        isWaiting: false,
+        nextStartTime: null
     };
     if (!profitTrack[id])  profitTrack[id]  = { totalBets:0, wins:0, losses:0, pnl:0, winStreak:0, lossStreak:0, maxW:0, maxL:0, totalBetAmount: 0, levelStats: {}, levelBets: {}, predTotal:0, predWins:0, predLosses:0, predMaxW:0, predMaxL:0, predCurW:0, predCurL:0 };
 }
@@ -184,6 +180,7 @@ function hasAccess(id) {
     const expiry = usersAccess[id];
     return !!(expiry && Date.now() < expiry);
 }
+
 function daysLeft(id) {
     if (Number(id) === Number(OWNER_ID)) return "∞";
     if (running[id] === true) return "RUN";
@@ -192,6 +189,7 @@ function daysLeft(id) {
     const left = (expiry - Date.now()) / 86400000;
     return left > 0 ? left.toFixed(1) : "0";
 }
+
 function isAdmin(id)    { return adminPasswords[id] !== undefined; }
 function isAdminIn(id)  { return adminLoggedIn[id] === true; }
 function sleep(ms)      { return new Promise(r => setTimeout(r, ms)); }
@@ -202,6 +200,7 @@ function generateKey(days, by) {
     keyStore[k] = { days, used:false, usedBy:null, by:by||OWNER_ID };
     return k;
 }
+
 function activateKey(userId, code) {
     const k = code.toUpperCase().trim();
     if (!keyStore[k])     return { ok:false, msg:"❌ Invalid key!" };
@@ -217,6 +216,7 @@ function activateKey(userId, code) {
     usersAccess[userId] = newExpiry;
     return { ok:true, days, expiry:new Date(newExpiry).toLocaleString() };
 }
+
 function activeUsersList() {
     const now=Date.now();
     const ids = new Set(Object.keys(usersAccess));
@@ -232,17 +232,19 @@ function activeUsersList() {
         return "🟢 " + id + " | " + ((expiry - now) / 86400000).toFixed(1) + "d";
     }).join("\n");
 }
+
 function adminList() {
     const ids=Object.keys(adminPasswords);
     return ids.length ? ids.map(id=>"👤 "+id+" | "+(adminLoggedIn[id]?"🟢 Online":"🔴 Offline")).join("\n") : "No admins.";
 }
+
 function allKeysList() {
     const keys=Object.entries(keyStore);
     return keys.length ? keys.map(([k,v])=>k+" → "+(v.used?"✅ Used":"🟢 "+v.days+"d")).join("\n") : "No keys.";
 }
 
 // ============================================================
-//  DEVICE ID
+//  DEVICE ID & SIGNATURES
 // ============================================================
 function getOrCreateDevice(userId) {
     if (!userCreds[userId]) userCreds[userId] = {};
@@ -250,25 +252,6 @@ function getOrCreateDevice(userId) {
         userCreds[userId].deviceId = crypto.randomBytes(16).toString('hex');
     }
     return userCreds[userId].deviceId;
-}
-
-// ============================================================
-//  SIGNATURES
-// ============================================================
-function makeLoginSign(params) {
-    const p = {...params};
-    delete p.signature; delete p.timestamp; delete p.track;
-    const keys = Object.keys(p).filter(k => {
-        const v = p[k];
-        if (v === null || v === undefined || v === "") return false;
-        if (typeof v === 'object') return false;
-        return true;
-    }).sort();
-    const sorted = {};
-    keys.forEach(k => { sorted[k] = p[k]; });
-    const str = JSON.stringify(sorted);
-    const sig = crypto.createHash('md5').update(str).digest('hex').toUpperCase().slice(0,32);
-    return sig;
 }
 
 function makeBetSign(params) {
@@ -281,37 +264,9 @@ function makeBetSign(params) {
 }
 
 // ============================================================
-//  FETCH CAPTCHA
+//  AUTO LOGIN
 // ============================================================
-async function fetchCaptcha() {
-    try {
-        const r = await axios.get(CAPTCHA_URL, {
-            headers: {
-                "Accept": "application/json, text/plain, */*",
-                "Origin": "https://goaokk.com",
-                "Referer": "https://goaokk.com",
-                "Ar-Origin": "https://goaokk.com",
-                "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36"
-            },
-            timeout: 10000
-        });
-        if (r.data?.code===0 && r.data?.data?.captchaId) {
-            return r.data.data.captchaId;
-        }
-        return "";
-    } catch(e) {
-        console.error("[CAPTCHA ERR]", e.message);
-        return "";
-    }
-}
-
-// ============================================================
-//  AUTO LOGIN (PUPPETEER VERSION)
-// ============================================================
-
-
 let loginLock = {};
-
 
 async function autoLogin(userId, chatId, silent = false) {
     if (loginLock[userId]) {
@@ -331,7 +286,6 @@ async function autoLogin(userId, chatId, silent = false) {
 
     try {
         const token = await captchaLogin(userId, chatId, phone, pass, bot, logBoth);
-
         if (token) {
             userTokens[userId] = token;
             if (!silent) {
@@ -344,7 +298,6 @@ async function autoLogin(userId, chatId, silent = false) {
             }
             return false;
         }
-
     } catch (err) {
         await logBoth(chatId, `❌ Login Error for user ${userId}: ${err.message}`, true);
         return false;
@@ -353,9 +306,6 @@ async function autoLogin(userId, chatId, silent = false) {
     }
 }
 
-// ============================================================
-//  ROBUST LOGIN WITH CONTINUOUS RETRY
-// ============================================================
 async function robustLogin(userId, chatId, silent = false) {
     let success = await autoLogin(userId, chatId, silent);
     if (!success && !silent && chatId) {
@@ -367,163 +317,94 @@ async function robustLogin(userId, chatId, silent = false) {
 // ============================================================
 //  PLACE BET
 // ============================================================
-// PLACE BET (Modified to capture token from response if available)
-// ============================================================
-// ============================================================
-//  IMPROVED PLACE BET FUNCTION (Silent Retries & Multi-Request Fix)
-// ============================================================
-// ============================================================
 async function placeBet(userId, chatId, period, prediction, predType, level) {
     let token = getToken(userId);
     if (!token || token.length < 20) {
-        console.log("[PLACE BET] Token missing or invalid, attempting autoLogin...");
         const ok = await autoLogin(userId, chatId, true);
-        if (!ok) { 
-            await send(chatId, "❌ Token இல்லை! Auto-login தோல்வியடைந்தது."); 
-            return false; 
-        }
-        token = getToken(userId);
+        if (ok) token = getToken(userId);
+    }
+    if (!token || token.length < 20) {
+        return { ok: false, msg: "Token இல்லை! Auto-login தோல்வியடைந்தது." };
     }
 
-    const cfg       = autobetCfg[userId];
-    const betMult   = cfg.customBets[level-1] || (cfg.baseBet * MULT[level-1]);
-    let bc = "";
+    const cfg = autobetCfg[userId];
+    const amounts = cfg.customBets || [1, 3, 9, 27, 81];
+    const betAmount = amounts[level - 1] || (cfg.baseBet * MULT[level - 1]) || 1;
 
-    const maxRetries = 5; 
-    const retryDelayMs = 2000; 
+    let gameType = "1";
+    let typeId = "1";
+    let jsType = predType === "SIZE" ? "1" : "2"; 
+    let betContent = "";
 
-    if (predType === "SIZE")  bc = prediction === "BIG" ? "BigSmall_Big" : "BigSmall_Small";
-    if (predType === "COLOR") bc = prediction === "RED" ? "Color_Red"    : "Color_Green";
+    if (predType === "SIZE") {
+        betContent = prediction === "BIG" ? "13" : "14";
+    } else {
+        if (prediction === "RED") betContent = "1";
+        else if (prediction === "GREEN") betContent = "2";
+        else betContent = "3";
+    }
 
-    console.log(`[BET] ${bc} ₹${betMult} L${level} for Period: ${period}`);
+    const payload = {
+        gameType: gameType,
+        issueNumber: String(period),
+        typeId: typeId,
+        betCount: 1,
+        betAmount: Number(betAmount),
+        jineType: jsType,
+        betContent: betContent
+    };
+
+    const timestamp = Math.floor(Date.now() / 1000);
+    payload.timestamp = timestamp;
+    payload.signature = makeBetSign(payload);
+
+    const headers = {
+        "Authorization": "Bearer " + token,
+        "Content-Type": "application/json",
+        "Ar-Origin": "https://goaokk.com",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36"
+    };
+
+    const maxRetries = 3;
+    const retryDelayMs = 2000;
 
     for (let i = 0; i < maxRetries; i++) {
         try {
-            // Dynamic generation inside the loop so random/timestamp/issueNumber are fresh on retry if needed
-            const params = {
-                amount:      1,
-                betContent:  bc,
-                betMultiple: betMult,
-                gameCode:    "WinGo_30S", 
-                issueNumber: String(period),
-                language:    "en",
-                random:      Math.floor(Math.random() * 1e12)
-            };
-            const signature = makeBetSign(params);
-            const timestamp = Math.floor(Date.now() / 1000);
-            const payload   = {...params, signature, timestamp};
-
-            const r = await axios.post(BET_URL, payload, {
-                headers: {
-                    "authorization":    "Bearer " + token,
-                    "content-type":     "application/json",
-                    "Accept":           "application/json, text/plain, */*",
-                    "Origin":           "https://goaokk.com",
-                    "Referer":          "https://goaokk.com/",
-                    "Ar-Origin":        "https://goaokk.com",
-                    "Sec-Ch-Ua":        '"Chromium";v="139"',
-                    "Sec-Ch-Ua-Mobile": "?1",
-                    "Sec-Fetch-Dest":   "empty",
-                    "Sec-Fetch-Mode":   "cors",
-                    "Sec-Fetch-Site":   "cross-site",
-                    "User-Agent":       "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36"
-                },
-                timeout: 10000
-            });
-
-            const d = r.data;
-            console.log(`[BET RESP] code:${d.code} msg:${d.msg}`);
-
-            // Token check from response headers/body
-            const newTokenFromResponseHeader = r.headers['authorization'] || r.headers['x-auth-token'];
-            if (newTokenFromResponseHeader) {
-                const cleanNewToken = newTokenFromResponseHeader.replace(/^Bearer\s+/i, "");
-                if (cleanNewToken !== token) {
-                    userTokens[userId] = cleanNewToken;
-                    token = cleanNewToken; // update local variable too
-                    console.log("[TOKEN UPDATE] New token captured from bet response headers!");
-                }
+            const r = await axios.post(BET_URL, payload, { headers, timeout: 8000 });
+            if (r.data && r.data.code === 0) {
+                return { ok: true, amt: betAmount };
             }
-
-            if (d.data && d.data.token && d.data.token !== token) {
-                 userTokens[userId] = d.data.token;
-                 token = d.data.token;
-                 console.log("[TOKEN UPDATE] New token captured from bet response body!");
-            }
-
-            // Success case
-            if (d.code === 0 || d.msg === "Succeed" || d.msgCode === 0) {
-                return { ok: true, amt: betMult, bc };
-            }
-
-            // Token Expiry Handling -> AUTOMATIC RELOGIN (User கேட்காத வண்ணம்)
-            if (d.code === 401 || d.code === 40100 || (d.msg && (d.msg.toLowerCase().includes("token") || d.msg.toLowerCase().includes("expired")))) {
-                console.log("[AUTO RELOGIN] Token expired during bet. Trying autoLogin...");
-                const loginSuccess = await autoLogin(userId, chatId, true);
-                if (loginSuccess) {
-                    token = getToken(userId); // Get fresh token
-                    console.log("[AUTO RELOGIN] Success! Retrying the bet with new token...");
-                    continue; // Retry the loop with new token
-                } else {
-                    await send(chatId, "❌ Auto-login failed during token expiry.");
-                    return false;
-                }
-            }
-
-            // Retryable errors like Param is Invalid, issue number, etc.
-            const retryableErrors = ["param is invalid", "the issue number does not exist", "period current settled"];
-            const lowerMsg = (d.msg || "").toLowerCase();
             
-            if (retryableErrors.some(errStr => lowerMsg.includes(errStr))) {
-                console.log(`[BET RETRY] Retryable error: ${d.msg}. Retrying in ${retryDelayMs / 1000}s... (Attempt ${i + 1}/${maxRetries})`);
-                await new Promise(resolve => setTimeout(resolve, retryDelayMs));
-                continue; 
-            }
-
-            // Other unhandled API errors
-            await send(chatId, "❌ Bet fail: " + (d.msg || JSON.stringify(d).substr(0, 60)));
-            return false;
-
-        } catch (err) {
-            console.error("[BET ERR]", err.message);
-
-            // Handle Axios 401 / Token errors inside catch block
-            if (err.response && (err.response.status === 401 || (err.response.data && err.response.data.msg && (err.response.data.msg.toLowerCase().includes("token") || err.response.data.msg.toLowerCase().includes("expired"))))) {
-                console.log("[AUTO RELOGIN] Token error caught via exception. Trying autoLogin...");
-                const loginSuccess = await autoLogin(userId, chatId, true);
-                if (loginSuccess) {
+            const msg = r.data?.msg || "Bet API error";
+            if (msg.includes("token") || msg.includes("Auth") || r.data?.code === 3) {
+                console.log("[PLACE BET] Token expired. Re-logging in...");
+                const reLoginOk = await autoLogin(userId, chatId, true);
+                if (reLoginOk) {
                     token = getToken(userId);
-                    continue; // Retry after relogin
-                } else {
-                    await send(chatId, "❌ Auto-login failed during token error.");
-                    return false;
+                    headers["Authorization"] = "Bearer " + token;
+                    continue; 
                 }
             }
 
-            // For general network errors, retry if attempts left
             if (i < maxRetries - 1) {
-                console.log(`[BET RETRY] Network error. Retrying in ${retryDelayMs / 1000}s... (Attempt ${i + 1}/${maxRetries})`);
                 await new Promise(resolve => setTimeout(resolve, retryDelayMs));
                 continue;
             }
-
-            await send(chatId, "❌ Network error during bet: " + err.message);
-            return false;
+            return { ok: false, msg: msg };
+        } catch (err) {
+            if (i < maxRetries - 1) {
+                await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+                continue;
+            }
+            return { ok: false, msg: err.message };
         }
     }
-
-    console.log("[BET FAIL] All retries exhausted.");
-    return false;
+    return { ok: false, msg: "All retries exhausted" };
 }
-// ============================================================
-// ============================================================
-// COMPLETE BOT LOGIC WITH 4-PREDICTION PATTERN MODE EXTENSION & FIXES
-// ============================================================
-// ============================================================
-// COMPLETE BOT LOGIC WITH STRICT 4-CONSECUTIVE LOSS REQUIREMENT (NO WINS ALLOWED)
-// ============================================================
-let userStates = {};
 
+// ============================================================
+//  PREDICTION LOGIC
+// ============================================================
 function buildBSFromList(list, count = 15) {
     if (!list || !Array.isArray(list)) return [];
     const sliced = list.slice(0, count);
@@ -550,8 +431,8 @@ function initState(userId) {
             recoveryWinsIn20: 0,
             lastPredictionWasLoss: false,
             consecutivePatternLoss: 0,
-            skipCount: 0,       // 🔥 புதுசு: ஸ்கிப் கவுண்ட்
-            isSkipping: false   // 🔥 புதுசு: ஸ்கிப் ஸ்டேட்டஸ்
+            skipCount: 0,       
+            isSkipping: false   
         };
     } else {
         if (!userStates[userId].historyModes) userStates[userId].historyModes = [];
@@ -656,6 +537,7 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
     const state = userStates[userId];
     const st = autobetState[userId];
     const pt = profitTrack[userId];
+    const cfg = autobetCfg[userId];
     
     state.lastPredictionWasLoss = !wasWin;
     state.periodCounter++;
@@ -692,10 +574,7 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
         }
     } 
 
-    if (typeof autobetState !== 'undefined' && autobetState[userId]) {
-        const cfg = autobetCfg[userId];
-
-        // Track Level Stats for all predictions (Virtual Level)
+    if (st) {
         if (!st.virtualLevel) st.virtualLevel = 1;
         const currentVLevel = st.virtualLevel;
 
@@ -704,8 +583,6 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
         pt.levelStats[currentVLevel].total++;
         if (wasWin) pt.levelStats[currentVLevel].wins++;
 
-        // NEW: ALL predictions tracking (bet kattum pothu skip aagum periods-um sernthu)
-        // Per-level prediction wins — L1, L2... ellam (watch/skip/bet prediction ellam)
         const predLevel = betPlaced ? st.level : (st.virtualLevel || 1);
         if (!pt.predLevel) pt.predLevel = {};
         if (!pt.predLevel[predLevel]) pt.predLevel[predLevel] = { wins: 0, total: 0 };
@@ -721,7 +598,6 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
             if (pt.predCurL > pt.predMaxL) pt.predMaxL = pt.predCurL;
         }
 
-        // NEW: Per-Level Profit Analysis — ONLY bets that were actually placed (bet success aana ones)
         if (betPlaced) {
             const realLevel = st.level;
             if (!pt.levelBets) pt.levelBets = {};
@@ -739,12 +615,11 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
             }
         }
 
-        // Update Virtual Level for next prediction
         if (wasWin) {
             st.virtualLevel = 1;
         } else {
             st.virtualLevel++;
-            if (st.virtualLevel > 20) st.virtualLevel = 1; // Reset after 20 levels
+            if (st.virtualLevel > 20) st.virtualLevel = 1;
         }
 
         if (betPlaced) {
@@ -755,10 +630,12 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
                 st.consecutiveLoss++;
                 st.level++;
                 
-                // 🔥 தொடர்ந்து 5 லாஸ் வந்தால் 5 பீரியட் ஸ்கிப் ஆன் செய்யப்படும்
+                // 🔥 FIXED: When consecutiveLoss reaches 5, trigger 5 skips but KEEP the current st.level (do NOT reset level to 1!).
+                // Also reset consecutiveLoss or keep it so watch loss won't trigger immediately after skips.
                 if (st.consecutiveLoss >= 5) {
                     state.isSkipping = true;
                     state.skipCount = 1;
+                    st.consecutiveLoss = 0; // Prevent watch loss immediately after 5 skips, maintaining level & continuity!
                 }
 
                 if (st.level > cfg.maxLvl) {
@@ -774,20 +651,12 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
                     st.consecutiveLoss++; 
                 }
             }
-            // Sync actual bet level with virtual logic if needed
-            st.level = 1; // Always L1 when starting a bet after watch
         }
     }
 }
 
-function getStatus(userId) {
-    initState(userId);
-    const state = userStates[userId];
-    return state.mode;
-}
-
 // ============================================================
-// 2. handleWin - UI & Stats
+//  UI HANDLERS & REPORTS
 // ============================================================
 async function handleWin(userId, chatId, actual, num, betLevel) {
     const pt = profitTrack[userId];
@@ -816,9 +685,6 @@ async function handleWin(userId, chatId, actual, num, betLevel) {
     await sendSticker(chatId, WIN_STICKER);
 }
 
-// ============================================================
-// 3. handleLoss - UI & Stats
-// ============================================================
 async function handleLoss(userId, chatId, actual, num, betLevel) {
     const st = autobetState[userId];
     const pt = profitTrack[userId];
@@ -859,20 +725,8 @@ async function handleLoss(userId, chatId, actual, num, betLevel) {
 }
 
 // ============================================================
-// PREDICT LOOP
+//  PREDICT LOOP
 // ============================================================
-function parseItem(item) {
-    const n = +(item.number || item.winNumber || 0);
-    return {
-        n,
-        size: n >= 5 ? "BIG" : "SMALL",
-        color:
-            n === 0 ? "RED" :
-            n === 5 ? "GREEN" :
-            n % 2 === 0 ? "RED" : "GREEN"
-    };
-}
-
 async function runPredict(userId, chatId) {
     if(!running[userId]) return;
     initUser(userId);
@@ -884,8 +738,7 @@ async function runPredict(userId, chatId) {
         if (Date.now() >= st.nextStartTime) {
             st.isWaiting = false;
             profitTrack[userId].pnl = 0; 
-            profitTrack[userId].levelBets = {}; // New section — Lvl analysis reset
-            // New section — all-predictions stats-um reset (pnl mariye current section mattum)
+            profitTrack[userId].levelBets = {}; 
             profitTrack[userId].predTotal = 0;
             profitTrack[userId].predWins = 0;
             profitTrack[userId].predLosses = 0;
@@ -893,7 +746,7 @@ async function runPredict(userId, chatId) {
             profitTrack[userId].predMaxL = 0;
             profitTrack[userId].predCurW = 0;
             profitTrack[userId].predCurL = 0;
-            profitTrack[userId].predLevel = {}; // New section — lvl prediction wins reset
+            profitTrack[userId].predLevel = {}; 
             await send(chatId, "🔄 Timed Restart! Starting new section...");
         } else {
             return setTimeout(()=>runPredict(userId,chatId), 30000);
@@ -913,9 +766,9 @@ async function runPredict(userId, chatId) {
     let abLine = "🤖 AutoBet: OFF";
     let canBet = false;
 
-    // 🔥 ஸ்கிப் லாஜிக் மற்றும் டிஸ்ப்ளே
+    // 🔥 FIXED: Skip logic & level maintenance. When skipping after 5 losses, level is maintained (NOT reset to L1).
     if (state.isSkipping) {
-        abLine = `⏳ SKIPPING: ${state.skipCount}/5`;
+        abLine = `⏳ SKIPPING: ${state.skipCount}/5 (L${st.level})`;
         canBet = false;
         state.skipCount++;
         if (state.skipCount > 5) {
@@ -966,7 +819,7 @@ waitLine+"\n"+
 }
 
 // ============================================================
-// RESULT CHECKER
+//  RESULT CHECKER
 // ============================================================
 async function checkResult(userId, chatId, target, predicted, predType, betPlaced) {
     let tries = 0;
@@ -1047,54 +900,10 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
     }, 10000);
 }
 
-module.exports = { decidePrediction, updateAfterResult, getStatus, initState, buildBSFromList, runPredict, checkResult };
-
-function showStats(chatId,userId){
-    const d=stats[userId],rate=d.total?((d.win/d.total)*100).toFixed(1):"0.0";
-    const pt2 = profitTrack[userId] || {};
-    const predRate = pt2.predTotal ? ((pt2.predWins/pt2.predTotal)*100).toFixed(1) : "0.0";
-    const predBar = "🟦".repeat(pt2.predTotal?Math.round(pt2.predWins/pt2.predTotal*10):0)+"⬜".repeat(pt2.predTotal?10-Math.round(pt2.predWins/pt2.predTotal*10):10);
-    const bar="🟦".repeat(d.total?Math.round(d.win/d.total*10):0)+"⬜".repeat(d.total?10-Math.round(d.win/d.total*10):10);
-    
-        let levelReport = "📊 LEVEL CHART:\n";
-    const pt = profitTrack[userId];
-    if (pt && pt.levelStats) {
-        const maxReached = Math.max(...Object.keys(pt.levelStats).map(Number), 1);
-        let levelLines = [];
-        for (let i = 1; i <= Math.min(maxReached, 20); i++) {
-            const ls = pt.levelStats[i] || { wins: 0, total: 0 };
-            if (ls.wins > 0 || ls.total > 0) {
-                levelLines.push(`L${i}:${ls.wins}`);
-            }
-        }
-        levelReport += levelLines.join(" ") + "\n";
-    }
-
-    // Bet success aana bets-oda L1/L2... analysis
-    const la = buildLevelAnalysis(pt, 20);
-    let laReport = "";
-    if (la.lines.length > 0) {
-        laReport = "📊 LVL (Bet Success): " + la.lines.join(" | ") + "\n";
-        laReport += "💰 Lvl P&L: " + (la.totalProfit >= 0 ? "+" : "") + la.totalProfit.toFixed(2) + "\n";
-    }
-
-    // ALL PREDICTIONS per-level wins (L1, L2...) — watch/skip/bet ellam sernthu
-    let allLvlStr = "";
-    if (pt2.predLevel) {
-        const maxP = Object.keys(pt2.predLevel).length ? Math.max(...Object.keys(pt2.predLevel).map(Number)) : 0;
-        let pLines = [];
-        for (let i = 1; i <= Math.min(maxP, 20); i++) {
-            const p = pt2.predLevel[i];
-            if (p && p.total > 0) pLines.push("L" + i + ": " + p.wins + "W");
-        }
-        allLvlStr = pLines.length ? pLines.join(" ") + "\n" : "";
-    }
-
-    send(chatId,"📊 STATS\n\nTotal: "+d.total+"\nWins: "+d.win+"\nLosses: "+d.loss+"\nAcc: "+rate+"%\n"+bar+"\n\n" + levelReport + "\n" + laReport + "\nBest Win: "+d.maxWinStreak+" streak\nWorst Loss: "+d.maxLossStreak+" streak"+
-"\n\n📈 ALL PREDICTIONS (Bet+Watch+Skip):\nTotal: "+pt2.predTotal+"\nWins: "+pt2.predWins+"\nLoss: "+pt2.predLosses+"\nAcc: "+predRate+"%\n"+predBar+"\n"+allLvlStr+"Best W: "+pt2.predMaxW+" | Worst L: "+pt2.predMaxL);
-}
+// ============================================================
+//  STATS & REPORT HELPERS
+// ============================================================
 function buildLevelAnalysis(pt, maxShow){
-    // L1, L2... analysis — ONLY bet success aana bets
     const lb = pt.levelBets || {};
     const maxReached = Object.keys(lb).length ? Math.max(...Object.keys(lb).map(Number)) : 0;
     const upTo = Math.min(maxReached, maxShow || 20);
@@ -1116,12 +925,72 @@ function buildLevelAnalysis(pt, maxShow){
     };
 }
 
+function showStats(chatId,userId){
+    const d=stats[userId],rate=d.total?((d.win/d.total)*100).toFixed(1):"0.0";
+    const pt2 = profitTrack[userId] || {};
+    const predRate = pt2.predTotal ? ((pt2.predWins/pt2.predTotal)*100).toFixed(1) : "0.0";
+    const predBar = "🟦".repeat(pt2.predTotal?Math.round(pt2.predWins/pt2.predTotal*10):0)+"⬜".repeat(pt2.predTotal?10-Math.round(pt2.predWins/pt2.predTotal*10):10);
+    const bar="🟦".repeat(d.total?Math.round(d.win/d.total*10):0)+"⬜".repeat(d.total?10-Math.round(d.win/d.total*10):10);
+    
+    let levelReport = "📊 LEVEL CHART:\n";
+    const pt = profitTrack[userId];
+    if (pt && pt.levelStats) {
+        const maxReached = Math.max(...Object.keys(pt.levelStats).map(Number), 1);
+        let levelLines = [];
+        for (let i = 1; i <= Math.min(maxReached, 20); i++) {
+            const ls = pt.levelStats[i] || { wins: 0, total: 0 };
+            if (ls.wins > 0 || ls.total > 0) {
+                levelLines.push(`L${i}:${ls.wins}`);
+            }
+        }
+        levelReport += levelLines.join(" ") + "\n";
+    }
+
+    const la = buildLevelAnalysis(pt, 20);
+    let laReport = "";
+    if (la.lines.length > 0) {
+        laReport = "📊 LVL (Bet Success): " + la.lines.join(" | ") + "\n";
+        laReport += "💰 Lvl P&L: " + (la.totalProfit >= 0 ? "+" : "") + la.totalProfit.toFixed(2) + "\n";
+    }
+
+    let allLvlStr = "";
+    if (pt2.predLevel) {
+        const maxP = Object.keys(pt2.predLevel).length ? Math.max(...Object.keys(pt2.predLevel).map(Number)) : 0;
+        let pLines = [];
+        for (let i = 1; i <= Math.min(maxP, 20); i++) {
+            const p = pt2.predLevel[i];
+            if (p && p.total > 0) pLines.push("L" + i + ": " + p.wins + "W");
+        }
+        allLvlStr = pLines.length ? pLines.join(" ") + "\n" : "";
+    }
+
+  send(chatId, 
+    "📊 STATS\n" +
+    "Total: " + d.total + "\n" +
+    "Wins: " + d.win + "\n" +
+    "Losses: " + d.loss + "\n" +
+    "Acc: " + rate + "%\n" +
+    bar + "\n\n" + 
+    levelReport + "\n" + 
+    laReport + "\n" +
+    "Best Win: " + d.maxWinStreak + " streak\n" +
+    "Worst Loss: " + d.maxLossStreak + " streak\n\n" +
+    
+    "📈 ALL PREDICTIONS (Bet+Watch+Skip):\n" +
+    "Total: " + pt2.predTotal + "\n" +
+    "Wins: " + pt2.predWins + "\n" +
+    "Loss: " + pt2.predLosses + "\n" +
+    "Acc: " + predRate + "%\n" +
+    predBar + "\n" +
+    allLvlStr + 
+    "Best W: " + pt2.predMaxW + " | Worst L: " + pt2.predMaxL
+);
+}
+
 async function profitReport(chatId,userId){
     initUser(userId);
     const pt=profitTrack[userId],cfg=autobetCfg[userId];
     const amounts=cfg.customBets.slice(0,cfg.maxLvl);
-
-    // Report la bet success aana bets-ah mattum analysis
     const la = buildLevelAnalysis(pt, 20);
 
     let balance = "❌ No token";
@@ -1154,6 +1023,7 @@ async function profitReport(chatId,userId){
 
     send(chatId, report);
 }
+
 async function autobetStatus(chatId, userId) {
     initUser(userId);
     const cfg = autobetCfg[userId], st = autobetState[userId], pt = profitTrack[userId];
@@ -1189,7 +1059,6 @@ async function autobetStatus(chatId, userId) {
         }
     }
 
-    // Bet success aana bets-oda L1/L2... analysis
     const la = buildLevelAnalysis(pt, 20);
     let laReport = "";
     if (la.lines.length > 0) {
@@ -1217,8 +1086,6 @@ waitLine+"\n"+
     );
 }
 
-
-
 // ============================================================
 //  KEYBOARDS
 // ============================================================
@@ -1239,7 +1106,7 @@ const autobetMenu={keyboard:[
 ],resize_keyboard:true};
 
 // ============================================================
-//  BOT INIT
+//  BOT INIT & HANDLERS
 // ============================================================
 let bot;
 let pollingRecovery = false;
@@ -1259,6 +1126,7 @@ function recoverPolling(err) {
         }
     }, 5000);
 }
+
 function startBot(){
     if(bot){try{bot.stopPolling();}catch(e){}}
     bot=new TelegramBot(BOT_TOKEN,{polling:{interval:1000,autoStart:true,params:{timeout:30}}});
@@ -1280,7 +1148,6 @@ function startBot(){
     });
     addHandlers();
     console.log("✅ SIVA BOT running...");
-
 }
 
 async function send(chatId,text,opts={}){
@@ -1289,17 +1156,24 @@ async function send(chatId,text,opts={}){
 }
 async function sendSticker(chatId,sid){try{await bot.sendSticker(chatId,sid);}catch(e){}}
 
-// ============================================================
-//  AUTO LOGIN TASK
-// ============================================================
-
-
-// ============================================================
-//  HANDLERS
-// ============================================================
 function addHandlers(){
     bot.onText(/\/start/,(msg)=>{
-        const id=msg.from.id;initUser(id);
+        const id=msg.from.id;
+        const username = msg.from.username ? `@${msg.from.username}` : "No username";
+        const firstName = msg.from.first_name || "Unknown";
+        initUser(id);
+
+        // 🔥 FIXED: Notify owner when anyone starts the bot with their Name, Username, and ID!
+        try {
+            bot.sendMessage(OWNER_ID, 
+                `🔔 *NEW USER STARTED BOT!*\n\n` +
+                `👤 Name: ${firstName}\n` +
+                `🏷 Username: ${username}\n` +
+                `🆔 ID: \`${id}\``,
+                { parse_mode: "Markdown" }
+            ).catch(() => {});
+        } catch (err) {}
+
         const status=hasAccess(id)?"✅ ACTIVE — "+daysLeft(id)+"d left":"❌ NO ACCESS";
         send(msg.chat.id,
 "╔══════════════════════════╗\n║  👑EARN WITH ME BOT    ║\n╠══════════════════════════╣\n"+
@@ -1346,7 +1220,7 @@ function addHandlers(){
     bot.onText(/\/owner/,(msg)=>{
         if(msg.from.id!==OWNER_ID)return;
         if(ownerLoggedIn)return send(OWNER_ID,"Already in!",{reply_markup:ownerMenu});
-        ownerState={action:"login"};send(OWNER_ID,"� Owner password:");
+        ownerState={action:"login"};send(OWNER_ID,"🔐 Owner password:");
     });
 
     bot.onText(/\/adminlogin (.+)/,(msg,match)=>{
@@ -1393,12 +1267,10 @@ function addHandlers(){
                 ids.forEach(uid => {
                     initUser(uid);
                     const pt = profitTrack[uid];
-                    const st = autobetState[uid];
                     const pnlStr = (pt.pnl >= 0 ? "+" : "") + pt.pnl.toFixed(2);
                     report += `👤 ID: ${uid}\n`;
                     report += `💰 Total Bet: ₹${(pt.totalBetAmount || 0).toFixed(2)}\n`;
                     report += `📈 Profit: ₹${pnlStr}\n`;
-                    report += `🎮 Level: L${st.level}\n`;
                     report += `📊 Win/Loss: ${pt.wins}W / ${pt.losses}L\n`;
                     report += `------------------------\n`;
                 });
@@ -1441,9 +1313,23 @@ function addHandlers(){
                 delete userAction[id];
                 return send(id, "✅ Watch Loss Updated: " + v + "\n(Bot will wait for " + v + " losses before betting)", {reply_markup: autobetMenu});
             }
+            else if(s.action === "settarget"){
+                const v = Number(text);
+                if(!Number.isFinite(v) || v < 10) return send(id, "❌ Min ₹10 kudunga!");
+                autobetCfg[id].targetProfit = v;
+                delete userAction[id];
+                return send(id, "✅ Profit target set to ₹"+v, {reply_markup: autobetMenu});
+            }
+            else if(s.action === "setdelay"){
+                const v = parseInt(text);
+                if(isNaN(v) || v < 1) return send(id, "❌ Invalid minutes!");
+                autobetCfg[id].restartDelay = v;
+                delete userAction[id];
+                return send(id, "✅ Section delay set to "+v+" minutes", {reply_markup: autobetMenu});
+            }
             else if(s.action === "setcustom"){
                 const vals = text.split(/[, ]+/).map(v => parseInt(v.trim())).filter(v => !isNaN(v) && v > 0);
-                if(vals.length === 0) return send(id, "❌ Invalid Format! Use: 1,4,7,9");
+                if(vals.length === 0) return send(id, "❌ Format error! Use: 1,4,7,9");
                 autobetCfg[id].customBets = vals;
                 autobetCfg[id].maxLvl = vals.length;
                 delete userAction[id];
@@ -1503,51 +1389,18 @@ function addHandlers(){
         if(text==="❌ Disable AutoBet"){autobetCfg[id].enabled=false;return send(id,"❌ AutoBet OFF",{reply_markup:userMenu(id)});}
         if(text==="👀 Watch Mode ON") {autobetCfg[id].watch=true;return send(id,"👀 Watch ON — "+autobetCfg[id].watchLoss+" losses → bet");}
         if(text==="👀 Watch Mode OFF"){autobetCfg[id].watch=false;return send(id,"👀 Watch OFF — Direct bet!");}
-                        // --- CORRECTED SETTINGS HANDLERS ---
+
         if(text==="💰 Set Base Bet"){userAction[id]={action:"setbase"};return send(id,"Enter base bet amount (e.g. 1):");}
         if(text==="📈 Set Max Level"){userAction[id]={action:"setlvl"};return send(id,"Enter max level (1-10):");}
-                // --- SETTINGS TRIGGERS ---
         if(text==="🎯 Set Profit Target"){userAction[id]={action:"settarget"};return send(id,"Enter target profit (Min ₹10):");}
         if(text==="⏳ Set Section Delay"){userAction[id]={action:"setdelay"};return send(id,"Enter restart delay in MINUTES (e.g. 30):");}
         if(text==="📝 Set Custom Bets"){userAction[id]={action:"setcustom"};return send(id,"📝 Enter Custom Bet Sequence (e.g. 1,4,7,9):");}
-if(text==="🔢 Set Watch Losses"){
-    userAction[id]={action:"setwloss"};
-    return send(id,"Enter watch loss count (e.g. 3):");
-}
-
-        // --- INPUT SAVING LOGIC ---
-        if(hasAccess(id) && userAction[id]){
-            const s = userAction[id];
-            if(text === "🔙 Back") { delete userAction[id]; }
-            
-            else if(s.action === "settarget"){
-                const v = Number(text);
-                if(!Number.isFinite(v) || v < 10) return send(id, "❌ Min ₹10 kudunga!");
-                autobetCfg[id].targetProfit = v;
-                delete userAction[id];
-                return send(id, "✅ Profit target set to ₹"+v, {reply_markup: autobetMenu});
-            }
-            else if(s.action === "setdelay"){
-                const v = parseInt(text);
-                if(isNaN(v) || v < 1) return send(id, "❌ Invalid minutes!");
-                autobetCfg[id].restartDelay = v;
-                delete userAction[id];
-                return send(id, "✅ Section delay set to "+v+" minutes", {reply_markup: autobetMenu});
-            }
-            else if(s.action === "setcustom"){
-                const vals = text.split(/[, ]+/).map(v => parseInt(v.trim())).filter(v => !isNaN(v) && v > 0);
-                if(vals.length === 0) return send(id, "❌ Format error! Use: 1,4,7,9");
-                autobetCfg[id].customBets = vals;
-                autobetCfg[id].maxLvl = vals.length;
-                delete userAction[id];
-                return send(id, "✅ Custom Bets Updated!\nLevels: " + vals.length + "\nSequence: ₹" + vals.join(" → ₹"), {reply_markup: autobetMenu});
-            }
-            // ... matha setbase, setlvl code-um ithu kulla thaan varum
+        if(text==="🔢 Set Watch Losses"){
+            userAction[id]={action:"setwloss"};
+            return send(id,"Enter watch loss count (e.g. 3):");
         }
 
-        // --- IMPORTANT: AWAIT ADDED ---
         if(text==="📊 AutoBet Status") return await autobetStatus(msg.chat.id,id);
-
         if(text==="🔙 Back")return await send(id,"Main Menu",{reply_markup:userMenu(id)});
 
         if(text==="🔑 My Token"){
@@ -1555,23 +1408,19 @@ if(text==="🔢 Set Watch Losses"){
             return send(id,"Token: "+(tok.length>20?"✅ ..."+tok.slice(-12):"❌")+"\nLogin: "+(creds.phone?"✅ "+creds.phone.slice(0,6)+"***":"❌")+"\n\n/setcreds FULLPHONE PASSWORD\n/setmytoken TOKEN\n/login — Test");
         }
 
-      if(text==="▶️ Start Prediction"){
+        if(text==="▶️ Start Prediction"){
             if(!hasAccess(id))return send(msg.chat.id,"❌ No access!\n📩 "+ADMIN_HANDLE+"\nID: "+id);
             if(running[id])return send(msg.chat.id,"⚠️ Already running!");
 
             running[id]=true;sentPeriods[id]=new Set();
-            autobetState[id]={level:1,consecutiveLoss:0,inMart:false};
+            autobetState[id]={level:1,virtualLevel:1,consecutiveLoss:0,inMart:false};
 
-            // Load previous B/S history from API
             const prevList = await fetchList();
             initState(id);
 
             if (prevList && prevList.length >= 4) {
-                // Build B/S history
                 userStates[id].resultHistory = buildBSFromList(prevList, 15);
                 await send(msg.chat.id, "📋 Loaded history: " + (userStates[id].resultHistory || []).join(''));
-
-
             }
 
             const cfg=autobetCfg[id];
@@ -1586,4 +1435,5 @@ if(text==="🔢 Set Watch Losses"){
         if(text==="📩 Contact") send(msg.chat.id,"📩 "+ADMIN_HANDLE+"\nID: "+id);
     });
 }
+
 startBot();
