@@ -169,8 +169,7 @@ function initUser(id) {
         consecutiveLoss:0, 
         inMart:false,
         isWaiting: false,
-        nextStartTime: null,
-        betPlaced: false
+        nextStartTime: null
     };
     if (!profitTrack[id])  profitTrack[id]  = { totalBets:0, wins:0, losses:0, pnl:0, winStreak:0, lossStreak:0, maxW:0, maxL:0, totalBetAmount: 0, levelStats: {}, levelBets: {}, predTotal:0, predWins:0, predLosses:0, predMaxW:0, predMaxL:0, predCurW:0, predCurL:0 };
 }
@@ -635,8 +634,7 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
     } 
 
     if (st) {
-            if (!st.virtualLevel) st.virtualLevel = 1;
-        if (!st.betPlaced) st.betPlaced = false; // true = already placed a bet in this martingale cycle
+        if (!st.virtualLevel) st.virtualLevel = 1;
         const currentVLevel = st.virtualLevel;
 
         if (!pt.levelStats) pt.levelStats = {};
@@ -683,26 +681,29 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
             if (st.virtualLevel > 20) st.virtualLevel = 1;
         }
 
-        // 🔥 NEW (NO SKIP): Bet-ku loss aana udane next period-ku continuous aaga continue pannum.
-        // Level-ku bet kattina appram watch loss count aagaathu — adhu oru cycle-ku oru thadava thaan (level reach panna munnadi).
         if (betPlaced) {
-            st.betPlaced = true;
             if (wasWin) {
-                // Win aana cycle complete — next period tharum L1-la thodu
                 st.level = 1;
                 st.consecutiveLoss = 0;
-                st.betPlaced = false;
             } else {
-                // 🔥 LEVEL RESET COMPLETELY REMOVE:
-                // Loss aana udane next level-ku increase — aana WIN AANA MATTUM DHAAN L1-ku reset.
-                // Max level-la kooda loss aanaalum level maxLvl-la continue aagum (reset illa, skip illa).
+                st.consecutiveLoss++;
                 st.level++;
-                if (st.level > cfg.maxLvl) st.level = cfg.maxLvl; // max-la continue, reset illa
+                
+                // 🔥 FIXED: When consecutiveLoss reaches 5, trigger 5 skips but KEEP the current st.level (do NOT reset level to 1!).
+                // Also reset consecutiveLoss or keep it so watch loss won't trigger immediately after skips.
+                if (st.consecutiveLoss >= 5) {
+                    state.isSkipping = true;
+                    state.skipCount = 1;
+                    st.consecutiveLoss = 0; // Prevent watch loss immediately after 5 skips, maintaining level & continuity!
+                }
+
+                if (st.level > cfg.maxLvl) {
+                    st.level = 1;
+                    st.consecutiveLoss = 0;
+                }
             }
         } else {
-            // Watch mode: LEVEL REACH AGURA MUNNA MATTUM thaan consecutiveLoss count aagum.
-            // Oru thadava bet place aachi na (st.betPlaced=true), ippo idhu run aagaathu.
-            if (cfg && cfg.watch && !st.betPlaced) {
+            if (cfg && cfg.watch) {
                 if (wasWin) {
                     st.consecutiveLoss = 0; 
                 } else {
@@ -769,18 +770,13 @@ async function handleLoss(userId, chatId, actual, num, betLevel) {
 "╚══════════════════════════╝"
         );
     } else {
-        // Max level-la kooda loss aanaalum level MAINTAIN — L1-ku reset ILLAI.
-        // Next period kooda atha max level-la continue aagi bet pottum.
-        const next = cfg.customBets[cfg.maxLvl-1] || (cfg.baseBet * MULT[cfg.maxLvl-1]);
         await send(chatId,
 "╔══════════════════════════╗\n"+
 "║  💀 MAX LEVEL LOSS       ║\n"+
 "╠══════════════════════════╣\n"+
 "║ Loss   : -₹"+amt+"\n"+
 "║ P&L    : "+(pt.pnl>=0?"+":"")+pt.pnl.toFixed(2)+"\n"+
-"╠══════════════════════════╣\n"+
-"║ Next : Same L"+cfg.maxLvl+" : ₹"+next+"\n"+
-"║ (Level Maintain — WIN aana mattum reset)\n"+
+"║ Reset  : L1 | Watch 0/"+cfg.watchLoss+"\n"+
 "╚══════════════════════════╝"
         );
     }
@@ -800,9 +796,6 @@ async function runPredict(userId, chatId) {
     if (st.isWaiting) {
         if (Date.now() >= st.nextStartTime) {
             st.isWaiting = false;
-            st.level = 1;
-            st.consecutiveLoss = 0;
-            st.betPlaced = false;
             profitTrack[userId].pnl = 0; 
             profitTrack[userId].levelBets = {}; 
             profitTrack[userId].predTotal = 0;
@@ -832,12 +825,19 @@ async function runPredict(userId, chatId) {
     let abLine = "🤖 AutoBet: OFF";
     let canBet = false;
 
-    // 🔥 NEW (NO SKIP): Skip-ey illama continuous aaga velai pannum.
-    // Watch mode — level reach aaga munna mattum consecutiveLoss count pannum. Bet place aachi na continue.
-    if (!cfg || !cfg.enabled) {
+    // 🔥 FIXED: Skip logic & level maintenance. When skipping after 5 losses, level is maintained (NOT reset to L1).
+    if (state.isSkipping) {
+        abLine = `⏳ SKIPPING: ${state.skipCount}/5 (L${st.level})`;
+        canBet = false;
+        state.skipCount++;
+        if (state.skipCount > 5) {
+            state.isSkipping = false;
+            state.skipCount = 0;
+        }
+    } else if (!cfg || !cfg.enabled) {
         abLine = "🤖 AutoBet: OFF";
         canBet = false;
-    } else if (cfg.watch && !st.betPlaced && st.consecutiveLoss < cfg.watchLoss) {
+    } else if (cfg.watch && st.consecutiveLoss < cfg.watchLoss) {
         abLine = `👀 WATCHING: ${st.consecutiveLoss}/${cfg.watchLoss}`;
         canBet = false;
     } else {
@@ -847,7 +847,7 @@ async function runPredict(userId, chatId) {
     }
 
     const patternName = signal && signal.pat ? signal.pat : (state && state.mode ? state.mode : "NORMAL");
-            const waitLine = (cfg && cfg.watch && !st.betPlaced && st.consecutiveLoss < cfg.watchLoss) ? "\nWatch Loss: " + st.consecutiveLoss + "/" + cfg.watchLoss : "";
+    const waitLine = (cfg && cfg.watch && st.consecutiveLoss < cfg.watchLoss) ? "\nWatch Loss: " + st.consecutiveLoss + "/" + cfg.watchLoss : "";
 
     await send(chatId,
 "╔══════════════════════════╗\n"+
@@ -1453,7 +1453,7 @@ function addHandlers(){
             if(running[id])return send(msg.chat.id,"⚠️ Already running!");
 
             running[id]=true;sentPeriods[id]=new Set();
-            autobetState[id]={level:1,virtualLevel:1,consecutiveLoss:0,inMart:false,betPlaced:false};
+            autobetState[id]={level:1,virtualLevel:1,consecutiveLoss:0,inMart:false};
 
             const prevList = await fetchList();
             initState(id);
