@@ -964,27 +964,8 @@ function showStats(chatId,userId){
         allLvlStr = pLines.length ? pLines.join(" ") + "\n" : "";
     }
 
-  let statsMessage = 
-    "📊 STATS\n\n" +
-    "Total: " + d.total + "\n" +
-    "Wins: " + d.win + "\n" +
-    "Losses: " + d.loss + "\n" +
-    "Acc: " + rate + "%\n" +
-    bar + "\n\n" +
-    levelReport + "\n" +
-    laReport + "\n" +
-    "Best Win: " + d.maxWinStreak + " streak\n" +
-    "Worst Loss: " + d.maxLossStreak + " streak\n\n" +
-    "📈 ALL PREDICTIONS (Bet+Watch+Skip):\n" +
-    "Total: " + pt2.predTotal + "\n" +
-    "Wins: " + pt2.predWins + "\n" +
-    "Loss: " + pt2.predLosses + "\n" +
-    "Acc: " + predRate + "%\n" +
-    predBar + "\n" +
-    allLvlStr + "\n" +
-    "Best W: " + pt2.predMaxW + " | Worst L: " + pt2.predMaxL;
-
-send(chatId, statsMessage);
+    send(chatId,"📊 STATS\n\nTotal: "+d.total+"\nWins: "+d.win+"\nLosses: "+d.loss+"\nAcc: "+rate+"%\n"+bar+"\n\n" + levelReport + "\n" + laReport + "\nBest Win: "+d.maxWinStreak+" streak\nWorst Loss: "+d.maxLossStreak+" streak"+
+    "\n\n📈 ALL PREDICTIONS (Bet+Watch+Skip):\nTotal: "+pt2.predTotal+"\nWins: "+pt2.predWins+"\nLoss: "+pt2.predLosses+"\nAcc: "+predRate+"%\n"+predBar+"\n"+allLvlStr+"Best W: "+pt2.predMaxW+" | Worst L: "+pt2.predMaxL);
 }
 
 async function profitReport(chatId,userId){
