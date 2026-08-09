@@ -23,7 +23,7 @@ const CAPTCHA_URL = "https://api.goa7777.com/api/webapi/Captcha";
 const DRAW_URL    = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIssuePage.json";
 
 // Martingale multipliers — user can customize base bet
-const MULT = [1, 3, 9, 27, 81, 243, 729, 2187, 6561, 19683];
+const MULT = [1, 3, 9, 27, 81, 243, 729, 2187, 6561, 19683, 59049, 177147, 531441, 1594323, 4782969];
 
 // ============================================================
 //  RENDER KEEP-ALIVE
@@ -497,7 +497,11 @@ function initState(userId) {
             lastPredictionWasLoss: false,
             consecutivePatternLoss: 0,
             skipCount: 0,       
-            isSkipping: false   
+            isSkipping: false,
+            levelWatchActive: false,
+            levelWatchLosses: 0,
+            levelWatchTarget: null,
+            levelWatchRequired: 0
         };
     } else {
         if (!userStates[userId].historyModes) userStates[userId].historyModes = [];
@@ -509,6 +513,10 @@ function initState(userId) {
         if (userStates[userId].consecutivePatternLoss === undefined) userStates[userId].consecutivePatternLoss = 0;
         if (userStates[userId].skipCount === undefined) userStates[userId].skipCount = 0;
         if (userStates[userId].isSkipping === undefined) userStates[userId].isSkipping = false;
+        if (userStates[userId].levelWatchActive === undefined) userStates[userId].levelWatchActive = false;
+        if (userStates[userId].levelWatchLosses === undefined) userStates[userId].levelWatchLosses = 0;
+        if (userStates[userId].levelWatchTarget === undefined) userStates[userId].levelWatchTarget = null;
+        if (userStates[userId].levelWatchRequired === undefined) userStates[userId].levelWatchRequired = 0;
     }
 }
 
@@ -532,7 +540,7 @@ function decidePrediction(list, currentLevel, userId) {
     };
 }
 
-function updateAfterResult(userId, wasWin, actual, betPlaced) {
+function updateAfterResult(userId, wasWin, actual, betPlaced, betAmount = null) {
     initState(userId);
     const state = userStates[userId];
     const st = autobetState[userId];
@@ -603,7 +611,7 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
             if (!pt.levelBets) pt.levelBets = {};
             if (!pt.levelBets[realLevel]) pt.levelBets[realLevel] = { bets:0, wins:0, losses:0, invested:0, profit:0 };
             const lb = pt.levelBets[realLevel];
-            const amt = (cfg.customBets && cfg.customBets[realLevel-1]) || (cfg.baseBet * MULT[realLevel-1]);
+            const amt = Number(betAmount) || (cfg.customBets && cfg.customBets[realLevel-1]) || (cfg.baseBet * MULT[realLevel-1]);
             lb.bets++;
             lb.invested += amt;
             if (wasWin) {
@@ -632,16 +640,28 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
                 st.level++;
 
                 const skipPredictions = lostLevel === 8 ? 3 :
-                    [5, 6, 7].includes(lostLevel) ? 2 : 0;
+                    lostLevel === 5 ? 5 :
+                    [6, 7].includes(lostLevel) ? 2 : 0;
                 if (skipPredictions > 0) {
                     state.isSkipping = true;
                     state.skipCount = 1;
                     state.skipTotal = skipPredictions;
+                } else if (lostLevel === 3 || lostLevel === 4) {
+                    state.levelWatchActive = true;
+                    state.levelWatchLosses = 0;
+                    state.levelWatchTarget = st.level;
+                    state.levelWatchRequired = lostLevel === 3 ? 1 : 2;
                 }
             }
         } else {
             // Watch mode (bet kattatha podhu)
-            if (cfg && cfg.watch && !state.skipWatch) {
+            if (state.levelWatchActive && !state.skipWatch) {
+                if (wasWin) {
+                    state.levelWatchLosses = 0;
+                } else {
+                    state.levelWatchLosses++;
+                }
+            } else if (cfg && cfg.watch && !state.skipWatch) {
                 if (wasWin) {
                     st.consecutiveLoss = 0; 
                 } else {
@@ -656,10 +676,10 @@ function updateAfterResult(userId, wasWin, actual, betPlaced) {
 // ============================================================
 //  UI HANDLERS & REPORTS
 // ============================================================
-async function handleWin(userId, chatId, actual, num, betLevel) {
+async function handleWin(userId, chatId, actual, num, betLevel, betAmount = null) {
     const pt = profitTrack[userId];
     const cfg = autobetCfg[userId];
-    const amt = cfg.customBets[betLevel-1] || (cfg.baseBet * MULT[betLevel-1]);
+    const amt = Number(betAmount) || cfg.customBets[betLevel-1] || (cfg.baseBet * MULT[betLevel-1]);
     const profit = amt * 0.98;
     
     pt.totalBets++; pt.wins++; pt.pnl += profit; 
@@ -683,12 +703,12 @@ async function handleWin(userId, chatId, actual, num, betLevel) {
     await sendSticker(chatId, WIN_STICKER);
 }
 
-async function handleLoss(userId, chatId, actual, num, betLevel) {
+async function handleLoss(userId, chatId, actual, num, betLevel, betAmount = null) {
     const st = autobetState[userId];
     const pt = profitTrack[userId];
     const cfg = autobetCfg[userId];
-    const amt = cfg.customBets[betLevel-1] || (cfg.baseBet * MULT[betLevel-1]);
-    const scheduledSkip = betLevel === 8 ? 3 : [5, 6, 7].includes(betLevel) ? 2 : 0;
+    const amt = Number(betAmount) || cfg.customBets[betLevel-1] || (cfg.baseBet * MULT[betLevel-1]);
+    const scheduledSkip = betLevel === 8 ? 3 : betLevel === 5 ? 5 : [6, 7].includes(betLevel) ? 2 : 0;
     
     pt.totalBets++; pt.losses++; pt.pnl -= amt; 
     pt.totalBetAmount = (pt.totalBetAmount || 0) + amt;
@@ -797,11 +817,20 @@ async function runPredict(userId, chatId) {
     } else if (!cfg || !cfg.enabled) {
         abLine = "🤖 AutoBet: OFF";
         canBet = false;
+    } else if (state.levelWatchActive && state.levelWatchLosses < state.levelWatchRequired) {
+        abLine = `👀 WATCH L${state.levelWatchTarget}: ${state.levelWatchLosses}/${state.levelWatchRequired} losses`;
+        canBet = false;
     } else if (cfg.watch && st.level === 1 && st.consecutiveLoss < cfg.watchLoss) {
         // Watch mode is ONLY checked before Level 1
         abLine = `👀 WATCHING: ${st.consecutiveLoss}/${cfg.watchLoss}`;
         canBet = false;
     } else {
+        if (state.levelWatchActive) {
+            state.levelWatchActive = false;
+            state.levelWatchTarget = null;
+            state.levelWatchLosses = 0;
+            state.levelWatchRequired = 0;
+        }
         canBet = true;
         const curBet = cfg.customBets[st.level-1] || (cfg.baseBet*MULT[st.level-1]);
         abLine = (st.level > 1 ? "📈 MART " : "💰 BET ") + "L" + st.level + ": ₹" + curBet;
@@ -830,10 +859,12 @@ waitLine+"\n"+
     }
 
     let betPlaced = false;
+    let betAmount = null;
     if (canBet) { 
         const result = await placeBet(userId, chatId, next, signal.val, signal.type, st.level);
         if (result && result.ok) {
             betPlaced = true;
+            betAmount = result.amt;
             await send(chatId, "✅ Bet Success! ₹" + result.amt + " L" + st.level + "\n⏳ Checking result...");
         } else if (result && !result.ok) {
             await send(chatId, "❌ Bet Failed: " + (result.msg || "Unknown error"));
@@ -843,16 +874,17 @@ waitLine+"\n"+
     }
 
     if (canBet && !betPlaced) {
-        return setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 8000);
+        await send(chatId, "🔁 Bet not placed. Retrying the same L" + st.level + " on the next period...");
+        return setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 3000);
     }
 
-    checkResult(userId, chatId, next, signal.val, signal.type, betPlaced);
+    checkResult(userId, chatId, next, signal.val, signal.type, betPlaced, betAmount);
 }
 
 // ============================================================
 //  RESULT CHECKER
 // ============================================================
-async function checkResult(userId, chatId, target, predicted, predType, betPlaced) {
+async function checkResult(userId, chatId, target, predicted, predType, betPlaced, betAmount = null) {
     let tries = 0;
     const cfg = autobetCfg[userId];
     const st = autobetState[userId];
@@ -882,7 +914,7 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         const win = predicted === actual;
         const betLevel = st.level;
 
-        updateAfterResult(userId, win, actual, betPlaced);
+        updateAfterResult(userId, win, actual, betPlaced, betAmount);
 
         const s = stats[userId];
         s.total++;
@@ -895,8 +927,8 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         }
 
         if (betPlaced) {
-            if (win) await handleWin(userId, chatId, actual, num, betLevel);
-            else await handleLoss(userId, chatId, actual, num, betLevel);
+            if (win) await handleWin(userId, chatId, actual, num, betLevel, betAmount);
+            else await handleLoss(userId, chatId, actual, num, betLevel, betAmount);
 
             const targetProfit = Number(cfg.targetProfit) || 1000;
             if (pt.pnl >= targetProfit) {
@@ -1235,8 +1267,9 @@ function addHandlers(){
     bot.onText(/\/owner/,(msg)=>{
         const id = msg.from.id;
         if(!isOwner(id))return;
-        if(ownerLoggedIn)return send(id,"Already in!",{reply_markup:ownerMenu});
-        ownerState={action:"login"};send(id,"🔐 Owner password:");
+        ownerLoggedIn = true;
+        ownerState = null;
+        return send(id,"👑 Owner access granted!",{reply_markup:ownerMenu});
     });
 
     bot.onText(/\/adminlogin (.+)/,(msg,match)=>{
@@ -1316,7 +1349,7 @@ function addHandlers(){
             }
             else if(s.action === "setlvl"){
                 const v = parseInt(text);
-                if(isNaN(v) || v < 1 || v > 10) return send(id, "❌ Invalid Level! Enter 1-10.");
+                if(isNaN(v) || v < 1 || v > 15) return send(id, "❌ Invalid Level! Enter 1-15.");
                 autobetCfg[id].maxLvl = v;
                 delete userAction[id];
                 const a = MULT.slice(0, v).map(m => autobetCfg[id].baseBet * m);
@@ -1346,6 +1379,7 @@ function addHandlers(){
             else if(s.action === "setcustom"){
                 const vals = text.split(/[, ]+/).map(v => parseInt(v.trim())).filter(v => !isNaN(v) && v > 0);
                 if(vals.length === 0) return send(id, "❌ Format error! Use: 1,4,7,9");
+                if(vals.length > MULT.length) return send(id, "❌ Maximum 15 custom levels allowed.");
                 autobetCfg[id].customBets = vals;
                 autobetCfg[id].maxLvl = vals.length;
                 delete userAction[id];
@@ -1407,7 +1441,7 @@ function addHandlers(){
         if(text==="👀 Watch Mode OFF"){autobetCfg[id].watch=false;return send(id,"👀 Watch OFF — Direct bet!");}
 
         if(text==="💰 Set Base Bet"){userAction[id]={action:"setbase"};return send(id,"Enter base bet amount (e.g. 1):");}
-        if(text==="📈 Set Max Level"){userAction[id]={action:"setlvl"};return send(id,"Enter max level (1-10):");}
+        if(text==="📈 Set Max Level"){userAction[id]={action:"setlvl"};return send(id,"Enter max level (1-15):");}
         if(text==="🎯 Set Profit Target"){userAction[id]={action:"settarget"};return send(id,"Enter target profit (Min ₹10):");}
         if(text==="⏳ Set Section Delay"){userAction[id]={action:"setdelay"};return send(id,"Enter restart delay in MINUTES (e.g. 30):");}
         if(text==="📝 Set Custom Bets"){userAction[id]={action:"setcustom"};return send(id,"📝 Enter Custom Bet Sequence (e.g. 1,4,7,9):");}
@@ -1430,6 +1464,14 @@ function addHandlers(){
 
             running[id]=true;sentPeriods[id]=new Set();
             autobetState[id]={level:1,virtualLevel:1,consecutiveLoss:0,inMart:false};
+            userStates[id].isSkipping = false;
+            userStates[id].skipCount = 0;
+            userStates[id].skipTotal = 0;
+            userStates[id].skipWatch = false;
+            userStates[id].levelWatchActive = false;
+            userStates[id].levelWatchLosses = 0;
+            userStates[id].levelWatchTarget = null;
+            userStates[id].levelWatchRequired = 0;
 
             const prevList = await fetchList();
             initState(id);
