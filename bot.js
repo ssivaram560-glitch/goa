@@ -1518,7 +1518,7 @@ function addHandlers(){
     bot.onText(/\/adminlogin (.+)/,(msg,match)=>{
         const id=msg.from.id,pass=match[1].trim();
         if(!isAdmin(id))return send(id,"Not admin.");
-        if(pass===adminPasswords[id]){adminLoggedIn[id]=true;send(id,"✅ Admin Login!",{reply_markup:userMenu(id)});}
+        if(pass===adminPasswords[id]){adminLoggedIn[id]=true;send(id,"✅ Admin Login!",{reply_markup:adminMenu});}
         else send(id,"❌ Wrong!");
     });
 
