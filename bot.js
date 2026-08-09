@@ -470,13 +470,12 @@ async function placeBet(userId, chatId, period, prediction, predType, level) {
 // ============================================================
 //  PREDICTION LOGIC
 // ============================================================
-function buildBSFromList(list, count = 15) {
+function buildBSFromList(list, count = 5) {
     if (!list || !Array.isArray(list)) return [];
     const sliced = list.slice(0, count);
     const resultHistory = [];
 
-    for (let i = sliced.length - 1; i >= 0; i--) {
-        const item = sliced[i];
+    for (const item of sliced) {
         const num = parseInt(item.number || item.winNumber || 0);
         const size = num >= 5 ? "BIG" : "SMALL";
         resultHistory.push(size);
@@ -529,8 +528,8 @@ function decidePrediction(list, currentLevel, userId) {
     const last5 = buildBSFromList(list, 5).map(size => size === "BIG" ? "B" : "S");
     const bigCount = last5.filter(value => value === "B").length;
     const smallCount = last5.filter(value => value === "S").length;
-    const prediction = bigCount > smallCount ? "SMALL" :
-        smallCount > bigCount ? "BIG" : "SKIP";
+    const prediction = bigCount > smallCount ? "BIG" :
+        smallCount > bigCount ? "SMALL" : "SKIP";
 
     return {
         type: "SIZE",
@@ -1477,7 +1476,7 @@ function addHandlers(){
             initState(id);
 
             if (prevList && prevList.length >= 4) {
-                userStates[id].resultHistory = buildBSFromList(prevList, 15);
+                userStates[id].resultHistory = buildBSFromList(prevList, 5);
                 await send(msg.chat.id, "📋 Loaded history: " + (userStates[id].resultHistory || []).join(''));
             }
 
