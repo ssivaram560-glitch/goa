@@ -8,7 +8,7 @@ const { captchaLogin } = require('./captcha-solver-free');
 // ============================================================
 //  CONFIG
 // ============================================================
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8826168903:AAFu3G6y71pXoNN4cfXiOzuChUwvDMEyyQI";
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8756624614:AAF2si9tiNmLevr1JqtWmspU6tn6ERSwsXc";
 const OWNER_ID     = 1865939951;
 const OWNER_IDS    = [OWNER_ID, 8321379592];
 const OWNER_PASS   = "praveensaran";
@@ -64,6 +64,9 @@ let profitTrack    = {};
 let GLOBAL_TOKEN   = "";
 let userTokens     = {}; 
 let userStates     = {};
+let activeBets     = {};
+let stopAfterWin   = {};
+let allUsersStopped = false;
 
 // ============================================================
 //  LOGGING HELPER
@@ -158,9 +161,10 @@ function initUser(id) {
         watch:false, 
         watchLoss:2, 
         baseBet:1, 
-        maxLvl:8, 
+        maxLvl:15,
         enabled:false, 
         customBets:[1,3,9,27,81],
+        startingBalance: 0,
         targetProfit: 1000,
         restartDelay: 1
     };
@@ -172,19 +176,18 @@ function initUser(id) {
         isWaiting: false,
         nextStartTime: null
     };
-    if (!profitTrack[id])  profitTrack[id]  = { totalBets:0, wins:0, losses:0, pnl:0, winStreak:0, lossStreak:0, maxW:0, maxL:0, totalBetAmount: 0, levelStats: {}, levelBets: {}, predTotal:0, predWins:0, predLosses:0, predMaxW:0, predMaxL:0, predCurW:0, predCurL:0 };
+    if (!profitTrack[id])  profitTrack[id]  = { totalBets:0, wins:0, losses:0, pnl:0, currentBalance: null, winStreak:0, lossStreak:0, maxW:0, maxL:0, totalBetAmount: 0, levelStats: {}, levelBets: {}, predTotal:0, predWins:0, predLosses:0, predMaxW:0, predMaxL:0, predCurW:0, predCurL:0 };
+    if (!Object.prototype.hasOwnProperty.call(profitTrack[id], "currentBalance")) profitTrack[id].currentBalance = null;
 }
 
 function hasAccess(id) {
     if (isOwner(id)) return true;
-    if (running[id] === true) return true;
     const expiry = usersAccess[id];
     return !!(expiry && Date.now() < expiry);
 }
 
 function daysLeft(id) {
     if (isOwner(id)) return "∞";
-    if (running[id] === true) return "RUN";
     const expiry = usersAccess[id];
     if (!expiry) return "0";
     const left = (expiry - Date.now()) / 86400000;
@@ -196,6 +199,24 @@ function isAdmin(id)    { return adminPasswords[id] !== undefined; }
 function isAdminIn(id)  { return adminLoggedIn[id] === true; }
 function sleep(ms)      { return new Promise(r => setTimeout(r, ms)); }
 function getToken(id)   { return userTokens[id] || GLOBAL_TOKEN || ""; }
+
+function updateTrackedBalance(userId, change) {
+    initUser(userId);
+    const cfg = autobetCfg[userId];
+    const pt = profitTrack[userId];
+    const startingBalance = Number(cfg.startingBalance);
+    if (!Number.isFinite(startingBalance) || startingBalance <= 0) return null;
+    if (pt.currentBalance === null || !Number.isFinite(Number(pt.currentBalance))) {
+        pt.currentBalance = startingBalance;
+    }
+    pt.currentBalance += Number(change) || 0;
+    return pt.currentBalance;
+}
+
+function trackedBalanceText(userId) {
+    const balance = profitTrack[userId] && profitTrack[userId].currentBalance;
+    return balance === null || !Number.isFinite(Number(balance)) ? "Not set" : "₹" + Number(balance).toFixed(2);
+}
 
 function generateKey(days, by) {
     const k = "EARN WITH ME-"+crypto.randomBytes(3).toString('hex').toUpperCase()+"-"+crypto.randomBytes(2).toString('hex').toUpperCase();
@@ -639,17 +660,27 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betAmount = null) 
                 st.level++;
 
                 const skipPredictions = lostLevel === 8 ? 3 :
-                    lostLevel === 5 ? 5 :
-                    [6, 7].includes(lostLevel) ? 2 : 0;
+                    lostLevel === 5 ? 5 : 0;
+                const watchRequired = {
+                    3: 2,
+                    4: 3,
+                    6: 2,
+                    7: 4,
+                    9: 4,
+                    10: 4,
+                    11: 2,
+                    12: 2,
+                    13: 2
+                }[lostLevel] || 0;
                 if (skipPredictions > 0) {
                     state.isSkipping = true;
                     state.skipCount = 1;
                     state.skipTotal = skipPredictions;
-                } else if (lostLevel === 3 || lostLevel === 4) {
+                } else if (watchRequired > 0) {
                     state.levelWatchActive = true;
                     state.levelWatchLosses = 0;
                     state.levelWatchTarget = st.level;
-                    state.levelWatchRequired = lostLevel === 3 ? 1 : 2;
+                    state.levelWatchRequired = watchRequired;
                 }
             }
         } else {
@@ -680,6 +711,7 @@ async function handleWin(userId, chatId, actual, num, betLevel, betAmount = null
     const cfg = autobetCfg[userId];
     const amt = Number(betAmount) || cfg.customBets[betLevel-1] || (cfg.baseBet * MULT[betLevel-1]);
     const profit = amt * 0.98;
+    updateTrackedBalance(userId, profit);
     
     pt.totalBets++; pt.wins++; pt.pnl += profit; 
     pt.totalBetAmount = (pt.totalBetAmount || 0) + amt;
@@ -694,6 +726,8 @@ async function handleWin(userId, chatId, actual, num, betLevel, betAmount = null
 "║ Result : "+actual+"\n"+
 "║ Profit : +₹"+profit.toFixed(2)+"\n"+
 "║ P&L    : "+(pt.pnl>=0?"+":"")+pt.pnl.toFixed(2)+"\n"+
+"║ Balance: "+trackedBalanceText(userId)+"\n"+
+"║ P&L    : "+(pt.pnl>=0?"+":"")+pt.pnl.toFixed(2)+"\n"+
 "║ Streak : "+pt.winStreak+" wins\n"+
 "║ Total  : "+pt.wins+"W/"+pt.losses+"L\n"+
 "║ Reset  : L1 | Watch 0/"+cfg.watchLoss+"\n"+
@@ -707,7 +741,19 @@ async function handleLoss(userId, chatId, actual, num, betLevel, betAmount = nul
     const pt = profitTrack[userId];
     const cfg = autobetCfg[userId];
     const amt = Number(betAmount) || cfg.customBets[betLevel-1] || (cfg.baseBet * MULT[betLevel-1]);
-    const scheduledSkip = betLevel === 8 ? 3 : betLevel === 5 ? 5 : [6, 7].includes(betLevel) ? 2 : 0;
+    updateTrackedBalance(userId, -amt);
+    const scheduledSkip = betLevel === 8 ? 3 : betLevel === 5 ? 5 : 0;
+    const watchRequired = {
+        3: 2,
+        4: 3,
+        6: 2,
+        7: 4,
+        9: 4,
+        10: 4,
+        11: 2,
+        12: 2,
+        13: 2
+    }[betLevel] || 0;
     
     pt.totalBets++; pt.losses++; pt.pnl -= amt; 
     pt.totalBetAmount = (pt.totalBetAmount || 0) + amt;
@@ -724,8 +770,23 @@ async function handleLoss(userId, chatId, actual, num, betLevel, betAmount = nul
 "║ Result : "+actual+"\n"+
 "║ Loss   : -₹"+amt+"\n"+
 "║ P&L    : "+(pt.pnl>=0?"+":"")+pt.pnl.toFixed(2)+"\n"+
+"║ Balance: "+trackedBalanceText(userId)+"\n"+
 "║ Skip   : "+scheduledSkip+" predictions\n"+
 "║ Next   : L"+nextLevel+" after skip\n"+
+"╚══════════════════════════╝"
+        );
+    } else if (watchRequired > 0) {
+        const nextLevel = betLevel + 1;
+        await send(chatId,
+"╔══════════════════════════╗\n"+
+"║  ❌ LOSS                 ║\n"+
+"╠══════════════════════════╣\n"+
+"║ Number : "+num+"\n"+
+"║ Result : "+actual+"\n"+
+"║ Loss   : -₹"+amt+"\n"+
+"║ P&L    : "+(pt.pnl>=0?"+":"")+pt.pnl.toFixed(2)+"\n"+
+"║ Watch  : "+watchRequired+" losses\n"+
+"║ Next   : L"+nextLevel+" after watch\n"+
 "╚══════════════════════════╝"
         );
     } else if(betLevel < cfg.maxLvl){
@@ -761,6 +822,12 @@ async function handleLoss(userId, chatId, actual, num, betLevel, betAmount = nul
 // ============================================================
 async function runPredict(userId, chatId) {
     if(!running[userId]) return;
+    if (!hasAccess(userId)) {
+        running[userId] = false;
+        stopAfterWin[userId] = false;
+        await send(chatId, "⏰ Your access has expired. The bot has been stopped.");
+        return;
+    }
     initUser(userId);
     const state = userStates[userId];
     const st = autobetState[userId];
@@ -864,6 +931,7 @@ waitLine+"\n"+
         if (result && result.ok) {
             betPlaced = true;
             betAmount = result.amt;
+            activeBets[userId] = true;
             await send(chatId, "✅ Bet Success! ₹" + result.amt + " L" + st.level + "\n⏳ Checking result...");
         } else if (result && !result.ok) {
             await send(chatId, "❌ Bet Failed: " + (result.msg || "Unknown error"));
@@ -890,7 +958,7 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
     const pt = profitTrack[userId];
     
     const iv = setInterval(async () => {
-        if (!running[userId]) return clearInterval(iv);
+        if (!running[userId] && !activeBets[userId]) return clearInterval(iv);
         if (++tries > 25) {
             tries = 0;
             await logBoth(chatId, "⏱ Target period not available yet. Retrying the same prediction...");
@@ -905,6 +973,7 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
             return;
         }
         clearInterval(iv);
+        delete activeBets[userId];
         const num = parseInt(res.number || res.winNumber || 0);
         let actual;
         if (predType === "SIZE") actual = num >= 5 ? "BIG" : "SMALL";
@@ -928,6 +997,26 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         if (betPlaced) {
             if (win) await handleWin(userId, chatId, actual, num, betLevel, betAmount);
             else await handleLoss(userId, chatId, actual, num, betLevel, betAmount);
+
+            if (!hasAccess(userId)) {
+                running[userId] = false;
+                stopAfterWin[userId] = false;
+                await send(chatId, "⏰ Your access has expired. The bot has been stopped after settling the current bet.");
+                return;
+            }
+
+            if (win && stopAfterWin[userId]) {
+                const ownerChatId = stopAfterWin[userId];
+                running[userId] = false;
+                stopAfterWin[userId] = false;
+                if (ownerChatId === userId) {
+                    await send(chatId, "✅ Bet WIN received. Your bot is now stopped.");
+                } else {
+                    await send(chatId, "🛑 Owner stopped the bot after your bet WIN. Bot is now stopped.");
+                    await send(ownerChatId, "✅ User " + userId + " won the current bet and was stopped by Stop All Users.");
+                }
+                return;
+            }
 
             const targetProfit = Number(cfg.targetProfit) || 1000;
             if (pt.pnl >= targetProfit) {
@@ -1049,7 +1138,8 @@ async function profitReport(chatId,userId){
 
     let report =
 "💰 PROFIT REPORT\n\n"+
-"Balance: "+balance+"\n\n";
+"Live Balance: "+balance+"\n"+
+"Tracked Balance: "+trackedBalanceText(userId)+"\n\n";
 
     if (la.lines.length > 0) {
         report += "📊 L1-L"+la.lines.length+" ANALYSIS (Bet Success Only):\n";
@@ -1064,10 +1154,58 @@ async function profitReport(chatId,userId){
     report +=
 "Bets   : "+pt.totalBets+"\nWins   : "+pt.wins+"\nLoss   : "+pt.losses+"\n"+
 "P&L    : "+(pt.pnl>=0?"+":"")+pt.pnl.toFixed(2)+"\n"+
+"Balance: "+trackedBalanceText(userId)+"\n"+
 "Best W : "+pt.maxW+" | Worst L: "+pt.maxL+"\n\n"+
 "Mart: ₹"+amounts.join("→₹");
 
     send(chatId, report);
+}
+
+function allUsersProfitStatsReport() {
+    const ids = new Set([
+        ...Object.keys(usersAccess),
+        ...Object.keys(stats),
+        ...Object.keys(profitTrack),
+        ...Object.keys(autobetCfg),
+        ...Object.keys(running)
+    ]);
+    const userIds = [...ids].filter(uid => !isOwner(uid));
+    if (!userIds.length) return "No users found.";
+
+    let totalBets = 0, totalWins = 0, totalLosses = 0, totalInvested = 0, totalPnl = 0;
+    let report = "📊 ALL USERS PROFIT & STATS\n\n";
+
+    userIds.forEach(uid => {
+        initUser(uid);
+        const d = stats[uid];
+        const pt = profitTrack[uid];
+        const st = autobetState[uid];
+        const accuracy = pt.totalBets ? ((pt.wins / pt.totalBets) * 100).toFixed(1) : "0.0";
+        const pnl = Number(pt.pnl) || 0;
+        const invested = Number(pt.totalBetAmount) || 0;
+        const predAccuracy = pt.predTotal ? ((pt.predWins / pt.predTotal) * 100).toFixed(1) : "0.0";
+
+        totalBets += pt.totalBets || 0;
+        totalWins += pt.wins || 0;
+        totalLosses += pt.losses || 0;
+        totalInvested += invested;
+        totalPnl += pnl;
+
+        report += `👤 ${uid}\n`;
+        report += `💵 Invested: ₹${invested.toFixed(2)} | P&L: ₹${pnl >= 0 ? "+" : ""}${pnl.toFixed(2)}\n`;
+        report += `🎯 Bets: ${pt.totalBets} | ${pt.wins}W/${pt.losses}L (${accuracy}%)\n`;
+        report += `📈 Predictions: ${pt.predTotal || 0} | ${pt.predWins || 0}W/${pt.predLosses || 0}L (${predAccuracy}%)\n`;
+        report += `🔥 Streak: ${pt.winStreak || 0}W / ${pt.lossStreak || 0}L | Level: L${autobetState[uid].level}\n`;
+        report += `⚙️ AutoBet: ${autobetCfg[uid].enabled ? "ON" : "OFF"}\n`;
+        report += "------------------------\n";
+    });
+
+    const overallAccuracy = totalBets ? ((totalWins / totalBets) * 100).toFixed(1) : "0.0";
+    report += "\n📌 TOTAL\n";
+    report += `💵 Invested: ₹${totalInvested.toFixed(2)}\n`;
+    report += `💰 P&L: ₹${totalPnl >= 0 ? "+" : ""}${totalPnl.toFixed(2)}\n`;
+    report += `🎯 Bets: ${totalBets} | ${totalWins}W/${totalLosses}L (${overallAccuracy}%)`;
+    return report;
 }
 
 async function autobetStatus(chatId, userId) {
@@ -1127,9 +1265,80 @@ async function autobetStatus(chatId, userId) {
 waitLine+"\n"+
 "In Mart  : "+(st.inMart?"YES":"NO")+"\n"+
 "P&L      : "+(pt.pnl>=0?"+":"")+pt.pnl.toFixed(2)+"\n"+
+"Tracked Balance: "+trackedBalanceText(userId)+"\n"+
 "Level Wins: "+levelWinStr.trim()+"\n"+laReport+"\n"+
 "Mart: ₹"+amounts.join("→₹")
     );
+}
+
+async function stopAllUsers(ownerChatId) {
+    allUsersStopped = true;
+    const ids = new Set([
+        ...Object.keys(usersAccess),
+        ...Object.keys(stats),
+        ...Object.keys(profitTrack),
+        ...Object.keys(running)
+    ]);
+    const stoppedNow = [];
+    const waitingForWin = [];
+
+    for (const uid of ids) {
+        if (isOwner(uid) || !running[uid]) continue;
+        if (activeBets[uid]) {
+            stopAfterWin[uid] = ownerChatId;
+            waitingForWin.push(uid);
+            await send(uid, "🛑 Owner stopped the bot for all users. Your current bet will finish, then your bot will stop after a WIN.");
+        } else {
+            running[uid] = false;
+            stopAfterWin[uid] = false;
+            stoppedNow.push(uid);
+            await send(uid, "🛑 Owner stopped the bot for all users. Your bot is now stopped.");
+        }
+    }
+
+    let report = "🛑 STOP ALL USERS COMPLETE\n\n";
+    report += `Stopped now: ${stoppedNow.length}\n`;
+    report += `Waiting for current WIN: ${waitingForWin.length}\n`;
+    if (stoppedNow.length) report += "\nStopped: " + stoppedNow.join(", ");
+    if (waitingForWin.length) report += "\nWaiting: " + waitingForWin.join(", ");
+    await send(ownerChatId, report);
+}
+
+async function startAllUsers(ownerChatId) {
+    allUsersStopped = false;
+    const ids = new Set([
+        ...Object.keys(usersAccess),
+        ...Object.keys(stats),
+        ...Object.keys(profitTrack),
+        ...Object.keys(running)
+    ]);
+    const started = [];
+
+    for (const uid of ids) {
+        if (isOwner(uid) || !hasAccess(uid) || running[uid]) continue;
+        initUser(uid);
+        running[uid] = true;
+        sentPeriods[uid] = new Set();
+        stopAfterWin[uid] = false;
+        delete activeBets[uid];
+        autobetState[uid] = {level:1,virtualLevel:1,consecutiveLoss:0,inMart:false};
+        userStates[uid].isSkipping = false;
+        userStates[uid].skipCount = 0;
+        userStates[uid].skipTotal = 0;
+        userStates[uid].skipWatch = false;
+        userStates[uid].levelWatchActive = false;
+        userStates[uid].levelWatchLosses = 0;
+        userStates[uid].levelWatchTarget = null;
+        userStates[uid].levelWatchRequired = 0;
+        started.push(uid);
+        await send(uid, "▶️ Owner started the bot for all users. Your bot is now running.");
+        runPredict(uid, uid);
+    }
+
+    let report = "▶️ START ALL USERS COMPLETE\n\n";
+    report += `Started: ${started.length}`;
+    if (started.length) report += "\nUsers: " + started.join(", ");
+    await send(ownerChatId, report);
 }
 
 // ============================================================
@@ -1140,12 +1349,12 @@ function userMenu(id){
     if(isAdmin(id))rows.push(["👑 Admin Panel"]);
     return{keyboard:rows,resize_keyboard:true};
 }
-const ownerMenu={keyboard:[["👥 All Users","👮 All Admins"],["👤 Add Admin","🗑 Remove Admin"],["🔑 Generate Key","📋 All Keys"],["🟢 Add User","🔴 Remove User"],["🔐 Set Token","📊 All Status"],["🚪 Owner Logout"]],resize_keyboard:true};
+const ownerMenu={keyboard:[["👥 All Users","👮 All Admins"],["📊 All Profit & Stats","📊 All Status"],["🛑 Stop All Users","▶️ Start All Users"],["👤 Add Admin","🗑 Remove Admin"],["🔑 Generate Key","📋 All Keys"],["🟢 Add User","🔴 Remove User"],["🔐 Set Token","🚪 Owner Logout"]],resize_keyboard:true};
 const adminMenu={keyboard:[["👥 Active Users","🔑 Generate Key"],["🟢 Add User","🔴 Remove User"],["📋 All Keys","🚪 Admin Logout"]],resize_keyboard:true};
 const autobetMenu={keyboard:[
     ["✅ Enable AutoBet","❌ Disable AutoBet"],
     ["👀 Watch Mode ON","👀 Watch Mode OFF"],
-    ["💰 Set Base Bet","📈 Set Max Level"],
+    ["💰 Set Base Bet","💳 Set Balance"],["📈 Set Max Level"],
     ["🎯 Set Profit Target", "⏳ Set Section Delay"],
     ["🔢 Set Watch Losses","📊 AutoBet Status"],
     ["📝 Set Custom Bets","🔙 Back"]
@@ -1207,7 +1416,28 @@ function addHandlers(){
         const id=msg.from.id;
         const username = msg.from.username ? `@${msg.from.username}` : "No username";
         const firstName = msg.from.first_name || "Unknown";
+        const isNewUser = !stats[id] && !autobetCfg[id];
         initUser(id);
+        const cfg = autobetCfg[id];
+        const configSummary =
+            `⚙️ Configuration\n`+
+            `AutoBet: ${cfg.enabled ? "ON" : "OFF"}\n`+
+            `Base bet: ₹${cfg.baseBet}\n`+
+            `Starting balance: ${Number(cfg.startingBalance) > 0 ? "₹" + cfg.startingBalance : "Not set"}\n`+
+            `Max level: L${cfg.maxLvl}\n`+
+            `Watch mode: ${cfg.watch ? "ON" : "OFF"}\n`+
+            `Watch losses: ${cfg.watchLoss}\n`+
+            `Profit target: ₹${cfg.targetProfit}\n`+
+            `Restart delay: ${cfg.restartDelay} min\n`+
+            `Custom bets: ₹${(cfg.customBets || []).join(" → ₹")}\n\n`+
+            `⚠️ DISCLAIMER\n`+
+            `Lucifer AI Trade signals are for informational purposes only.\n`+
+            `Trading involves risk, and profits are not guaranteed.\n`+
+            `Trade responsibly and manage your risk.\n\n`+
+            `🔐 Login Setup\n`+
+            `/setcreds FULLPHONE PASSWORD\n`+
+            `Then use /login to test login.\n`+
+            `Or use /setmytoken TOKEN for a manual token.`;
 
         // 🔥 FIXED: Notify owner when anyone starts the bot with their Name, Username, and ID!
         try {
@@ -1215,7 +1445,8 @@ function addHandlers(){
                 `🔔 *NEW USER STARTED BOT!*\n\n` +
                 `👤 Name: ${firstName}\n` +
                 `🏷 Username: ${username}\n` +
-                `🆔 ID: \`${id}\``,
+                `🆔 ID: \`${id}\`\n\n` +
+                (isNewUser ? configSummary : "⚙️ Existing user started the bot."),
                 { parse_mode: "Markdown" }
             ).catch(() => {}));
         } catch (err) {}
@@ -1226,6 +1457,7 @@ function addHandlers(){
 "║ Status : "+status+"\n║ ID     : "+id+"\n║ Admin  : "+ADMIN_HANDLE+"\n╠══════════════════════════╣\n"+
 "║ /key CODE to activate    ║\n╚══════════════════════════╝",
         {reply_markup:userMenu(id)});
+    if (isNewUser) send(id, configSummary);
     });
 
     bot.onText(/\/key (.+)/,(msg,match)=>{
@@ -1271,6 +1503,18 @@ function addHandlers(){
         return send(id,"👑 Owner access granted!",{reply_markup:ownerMenu});
     });
 
+    bot.onText(/\/stopall/,(msg)=>{
+        const id = msg.from.id;
+        if (!isOwner(id)) return;
+        return stopAllUsers(id);
+    });
+
+    bot.onText(/\/startall/,(msg)=>{
+        const id = msg.from.id;
+        if (!isOwner(id)) return;
+        return startAllUsers(id);
+    });
+
     bot.onText(/\/adminlogin (.+)/,(msg,match)=>{
         const id=msg.from.id,pass=match[1].trim();
         if(!isAdmin(id))return send(id,"Not admin.");
@@ -1283,7 +1527,7 @@ function addHandlers(){
         if(!text||text.startsWith("/"))return;
         initUser(id);
 
-        const OB=["👥 All Users","👮 All Admins","👤 Add Admin","🗑 Remove Admin","🔑 Generate Key","📋 All Keys","🟢 Add User","🔴 Remove User","🔐 Set Token","📊 All Status","🚪 Owner Logout"];
+        const OB=["👥 All Users","👮 All Admins","📊 All Profit & Stats","📊 All Status","🛑 Stop All Users","▶️ Start All Users","👤 Add Admin","🗑 Remove Admin","🔑 Generate Key","📋 All Keys","🟢 Add User","🔴 Remove User","🔐 Set Token","🚪 Owner Logout"];
         const AB=["👥 Active Users","🔑 Generate Key","🟢 Add User","🔴 Remove User","📋 All Keys","🚪 Admin Logout"];
 
         if(isOwner(id)&&ownerState){
@@ -1301,6 +1545,9 @@ function addHandlers(){
         if(isOwner(id)&&ownerLoggedIn){
             if(text==="👥 All Users")    return send(id,"👥\n\n"+activeUsersList());
             if(text==="👮 All Admins")   return send(id,"👮\n\n"+adminList());
+            if(text==="📊 All Profit & Stats") return send(id, allUsersProfitStatsReport());
+            if(text==="🛑 Stop All Users") return stopAllUsers(id);
+            if(text==="▶️ Start All Users") return startAllUsers(id);
             if(text==="👤 Add Admin")    {ownerState={action:"addadmin"};return send(id,"User ID:");}
             if(text==="🗑 Remove Admin") {ownerState={action:"removeadmin"};return send(id,"Admin ID:");}
             if(text==="🔑 Generate Key") {ownerState={action:"genkey"};return send(id,"Days?");}
@@ -1318,6 +1565,7 @@ function addHandlers(){
                     const pnlStr = (pt.pnl >= 0 ? "+" : "") + pt.pnl.toFixed(2);
                     report += `👤 ID: ${uid}\n`;
                     report += `💰 Total Bet: ₹${(pt.totalBetAmount || 0).toFixed(2)}\n`;
+                    report += `💳 Balance: ${trackedBalanceText(uid)}\n`;
                     report += `📈 Profit: ₹${pnlStr}\n`;
                     report += `📊 Win/Loss: ${pt.wins}W / ${pt.losses}L\n`;
                     report += `------------------------\n`;
@@ -1345,6 +1593,14 @@ function addHandlers(){
                 delete userAction[id];
                 const a = MULT.slice(0, autobetCfg[id].maxLvl).map(m => v * m);
                 return send(id, "✅ Base Bet Updated: ₹" + v + "\nMartingale: ₹" + a.join("→₹"), {reply_markup: autobetMenu});
+            }
+            else if(s.action === "setbalance"){
+                const v = Number(text);
+                if(!Number.isFinite(v) || v <= 0) return send(id, "❌ Invalid balance! Enter an amount greater than ₹0.");
+                autobetCfg[id].startingBalance = v;
+                profitTrack[id].currentBalance = v;
+                delete userAction[id];
+                return send(id, "✅ Starting balance set: ₹" + v.toFixed(2) + "\nCurrent balance: ₹" + v.toFixed(2), {reply_markup: autobetMenu});
             }
             else if(s.action === "setlvl"){
                 const v = parseInt(text);
@@ -1440,6 +1696,7 @@ function addHandlers(){
         if(text==="👀 Watch Mode OFF"){autobetCfg[id].watch=false;return send(id,"👀 Watch OFF — Direct bet!");}
 
         if(text==="💰 Set Base Bet"){userAction[id]={action:"setbase"};return send(id,"Enter base bet amount (e.g. 1):");}
+        if(text==="💳 Set Balance"){userAction[id]={action:"setbalance"};return send(id,"Enter starting balance amount (e.g. 1000):");}
         if(text==="📈 Set Max Level"){userAction[id]={action:"setlvl"};return send(id,"Enter max level (1-15):");}
         if(text==="🎯 Set Profit Target"){userAction[id]={action:"settarget"};return send(id,"Enter target profit (Min ₹10):");}
         if(text==="⏳ Set Section Delay"){userAction[id]={action:"setdelay"};return send(id,"Enter restart delay in MINUTES (e.g. 30):");}
@@ -1458,10 +1715,13 @@ function addHandlers(){
         }
 
         if(text==="▶️ Start Prediction"){
+            if(allUsersStopped && !isOwner(id)) return send(msg.chat.id, "🛑 Owner has stopped all users. Please wait until the owner starts all bots.");
             if(!hasAccess(id))return send(msg.chat.id,"❌ No access!\n📩 "+ADMIN_HANDLE+"\nID: "+id);
             if(running[id])return send(msg.chat.id,"⚠️ Already running!");
 
             running[id]=true;sentPeriods[id]=new Set();
+            stopAfterWin[id] = false;
+            delete activeBets[id];
             autobetState[id]={level:1,virtualLevel:1,consecutiveLoss:0,inMart:false};
             userStates[id].isSkipping = false;
             userStates[id].skipCount = 0;
@@ -1486,7 +1746,15 @@ function addHandlers(){
             );
             runPredict(id,msg.chat.id);
         }
-        if(text==="🛑 Stop")   {running[id]=false;send(msg.chat.id,"🛑 Stopped.");}
+        if(text==="🛑 Stop") {
+            if (activeBets[id]) {
+                stopAfterWin[id] = id;
+                return send(msg.chat.id, "⏳ Stop requested. The current bet will finish, and the bot will stop after a WIN.");
+            }
+            running[id] = false;
+            stopAfterWin[id] = false;
+            send(msg.chat.id,"🛑 Stopped.");
+        }
         if(text==="📊 Stats")  showStats(msg.chat.id,id);
         if(text==="💰 Profit") profitReport(msg.chat.id,id);
         if(text==="📩 Contact") send(msg.chat.id,"📩 "+ADMIN_HANDLE+"\nID: "+id);
