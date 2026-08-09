@@ -8,7 +8,7 @@ const { captchaLogin } = require('./captcha-solver-free');
 // ============================================================
 //  CONFIG
 // ============================================================
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8756624614:AAF2si9tiNmLevr1JqtWmspU6tn6ERSwsXc";
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8756624614:AAELs5o_lC8e4Gttzz7QQxhxzUPs5T-94Zs";
 const OWNER_ID     = 1865939951;
 const OWNER_IDS    = [OWNER_ID, 8321379592];
 const OWNER_PASS   = "praveensaran";
