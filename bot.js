@@ -644,8 +644,8 @@ function decidePrediction(list, currentLevel, userId) {
             const prediction = recent === "BIG" ? "SMALL" : "BIG";
             // activate opposite-mode in user state so subsequent calls continue it until a loss
             state.oppositeMode = { active: true, dir: prediction };
-            // immediateBet: cancel current skip and place one immediate bet at L3; afterLossSkip: 6
-            return { type: "SIZE", val: prediction, conf: 92, pat: "COND2", action: { opposite: true, immediateBet: true, afterLossSkip: 6, immediateLevel: 3 } };
+            // immediateBet: cancel current skip and place one immediate bet at the next level; afterLossSkip: 6
+            return { type: "SIZE", val: prediction, conf: 92, pat: "COND2", action: { opposite: true, immediateBet: true, afterLossSkip: 6 } };
         }
     }
 
@@ -1140,73 +1140,6 @@ waitLine+"\n"+
     );
 
     if (signal.val === "SKIP") {
-            updateAfterResult(userId, win, actual, betPlaced, betAmount);
-        
-            const s = stats[userId];
-            s.total++;
-            if (win) {
-                s.win++; s.winStreak++; s.lossStreak = 0;
-                if (s.winStreak > s.maxWinStreak) s.maxWinStreak = s.winStreak;
-            } else {
-                s.loss++; s.lossStreak++; s.winStreak = 0;
-                if (s.lossStreak > s.maxLossStreak) s.maxLossStreak = s.lossStreak;
-            }
-        
-            if (betPlaced) {
-                if (win) await handleWin(userId, chatId, actual, num, betLevel, betAmount);
-                else await handleLoss(userId, chatId, actual, num, betLevel, betAmount);
-            
-                if (!hasAccess(userId)) {
-                    running[userId] = false;
-                    stopAfterWin[userId] = false;
-                    await send(chatId, "⏰ Your access has expired. The bot has been stopped after settling the current bet.");
-                    return;
-                }
-            
-                if (win && stopAfterWin[userId]) {
-                    const ownerChatId = stopAfterWin[userId];
-                    running[userId] = false;
-                    stopAfterWin[userId] = false;
-                    if (ownerChatId === userId) {
-                        await send(chatId, "✅ Bet WIN received. Your bot is now stopped.");
-                    } else {
-                        await send(chatId, "🛑 Owner stopped the bot after your bet WIN. Bot is now stopped.");
-                        await send(ownerChatId, "✅ User " + userId + " won the current bet and was stopped by Stop All Users.");
-                    }
-                    return;
-                }
-            
-                const targetProfit = Number(cfg.targetProfit) || 1000;
-                if (pt.pnl >= targetProfit) {
-                    st.isWaiting = true;
-                    st.nextStartTime = Date.now() + (Number(cfg.restartDelay) || 1) * 60 * 1000;
-                    await send(chatId, "🎯 TARGET REACHED! Bot Paused.");
-                }
-            } else {
-                if (win) {
-                    await send(chatId, 
-                        "╔══════════════════════════╗\n"+
-                        "║  👀 WATCH RESULT: WIN! ✅ ║\n"+
-                        "╠══════════════════════════╣\n"+
-                        "║ Number : "+num+"\n"+
-                        "║ Result : "+actual+"\n"+
-                        "║ Status : Correct Prediction\n"+
-                        "╚══════════════════════════╝"
-                    );
-                    await sendSticker(chatId, WIN_STICKER);
-                } else {
-                    await send(chatId, 
-                        "╔══════════════════════════╗\n"+
-                        "║  👀 WATCH RESULT: LOSS ❌ ║\n"+
-                        "╠══════════════════════════╣\n"+
-                        "║ Number : "+num+"\n"+
-                        "║ Result : "+actual+"\n"+
-                        "║ Status : Incorrect Prediction\n"+
-                        "╚══════════════════════════╝"
-                    );
-                    await sendSticker(chatId, LOSS_STICKER);
-                }
-            }
         return setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 3000);
     }
 
@@ -1269,7 +1202,7 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         else actual = num === 0 ? "RED" : num === 5 ? "GREEN" : num % 2 === 0 ? "RED" : "GREEN";
         
         const win = predicted === actual;
-        const betLevel = betLevel || st.level;
+        const settledBetLevel = betLevel || st.level;
 
         updateAfterResult(userId, win, actual, betPlaced, betAmount);
 
@@ -1284,8 +1217,8 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         }
 
         if (betPlaced) {
-            if (win) await handleWin(userId, chatId, actual, num, betLevel, betAmount);
-            else await handleLoss(userId, chatId, actual, num, betLevel, betAmount);
+            if (win) await handleWin(userId, chatId, actual, num, settledBetLevel, betAmount);
+            else await handleLoss(userId, chatId, actual, num, settledBetLevel, betAmount);
 
             if (!hasAccess(userId)) {
                 running[userId] = false;
