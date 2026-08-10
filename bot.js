@@ -77,6 +77,16 @@ function touchUser(uid) {
     try { lastActivity[uid] = Date.now(); } catch(e){}
 }
 
+function cleanupUserSession(uid) {
+    delete sentPeriods[uid];
+    delete autobetState[uid];
+    delete userStates[uid];
+    delete activeBets[uid];
+    delete stopAfterWin[uid];
+    delete running[uid];
+    delete lastActivity[uid];
+}
+
 async function cleanupInactiveUsers() {
     try {
         const now = Date.now();
@@ -100,12 +110,15 @@ async function cleanupInactiveUsers() {
                 delete stopAfterWin[uid];
                 delete running[uid];
                 delete lastActivity[uid];
+                delete userAction[uid];
+                delete adminState[uid];
+                delete keyStore[uid];
                 removed.push(uid);
             }
         }
 
         // Also sweep orphaned entries for users that are not owners, not running and have no access
-        const maps = [stats, sentPeriods, autobetCfg, autobetState, profitTrack, userTokens, userCreds, userStates, activeBets, stopAfterWin, running, usersAccess];
+        const maps = [stats, sentPeriods, autobetCfg, autobetState, profitTrack, userTokens, userCreds, userStates, activeBets, stopAfterWin, running, usersAccess, userAction, adminState, keyStore];
         const ids = new Set();
         maps.forEach(m => Object.keys(m).forEach(k => ids.add(k)));
         for (const uid of ids) {
@@ -125,6 +138,9 @@ async function cleanupInactiveUsers() {
                 delete running[uid];
                 delete usersAccess[uid];
                 delete lastActivity[uid];
+                delete userAction[uid];
+                delete adminState[uid];
+                delete keyStore[uid];
                 removed.push(uid);
             }
         }
@@ -1235,6 +1251,7 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
                 const ownerChatId = stopAfterWin[userId];
                 running[userId] = false;
                 stopAfterWin[userId] = false;
+                cleanupUserSession(userId);
                 if (ownerChatId === userId) {
                     await send(chatId, "✅ Bet WIN received. Your bot is now stopped.");
                 } else {
@@ -1517,6 +1534,7 @@ async function stopAllUsers(ownerChatId) {
         } else {
             running[uid] = false;
             stopAfterWin[uid] = false;
+            cleanupUserSession(uid);
             stoppedNow.push(uid);
             await send(uid, "🛑 Owner stopped the bot for all users. Your bot is now stopped.");
         }
@@ -1985,6 +2003,7 @@ function addHandlers(){
             }
             running[id] = false;
             stopAfterWin[id] = false;
+            cleanupUserSession(id);
             send(msg.chat.id,"🛑 Stopped.");
         }
         if(text==="📊 Stats")  showStats(msg.chat.id,id);
