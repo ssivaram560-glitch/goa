@@ -693,4 +693,5 @@ module.exports = {
     performHumanDrag,
     isCaptchaVisible,
     extractCaptchaImages,
+    refreshCaptcha,
 };
