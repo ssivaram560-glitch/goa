@@ -228,7 +228,7 @@ async function getLiveBalance(userId, chatId = null) {
 
 function initUser(id) {
     if (!stats[id])        stats[id]        = { total:0,win:0,loss:0,lossStreak:0,winStreak:0,maxWinStreak:0,maxLossStreak:0 };
-    if (!userStates[id])   userStates[id]   = { resultHistory:[], skipCount:0, currentMode:null, lastPrediction:null, isSkipping:false };
+    if (!userStates[id])   userStates[id]   = { resultHistory:[], skipCount:0, currentMode:null, lastPrediction:null, isSkipping:false, condition2Active:false, condition2Mode:null };
     if (!sentPeriods[id])  sentPeriods[id]  = new Set();
     if (!autobetCfg[id])   autobetCfg[id]   = { 
         watch:false, 
@@ -620,6 +620,19 @@ function decidePrediction(list, currentLevel, userId) {
     }
 
     initState(userId);
+    const state = userStates[userId];
+
+    // Condition 2 special mode
+    if (state.condition2Active) {
+        const lastResult = (parseInt(list[0].number || list[0].winNumber || 0) >= 5) ? "BIG" : "SMALL";
+        if (state.condition2Mode === 'OPPOSITE') {
+            const pred = (lastResult === "BIG" ? "SMALL" : "BIG");
+            return { type: "SIZE", val: pred, conf: 90, pat: "OPPOSITE" };
+        } else if (state.condition2Mode === 'DIRECT') {
+            return { type: "SIZE", val: lastResult, conf: 90, pat: "DIRECT" };
+        }
+    }
+
     const last5 = buildBSFromList(list, 5).map(size => size === "BIG" ? "B" : "S");
     const bigCount = last5.filter(value => value === "B").length;
     const smallCount = last5.filter(value => value === "S").length;
@@ -643,6 +656,15 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betAmount = null) 
     
     state.lastPredictionWasLoss = !wasWin;
     state.periodCounter++;
+
+    // Condition 2 state transition
+    if (state.condition2Active) {
+        if (state.condition2Mode === 'OPPOSITE') {
+            if (!wasWin) {
+                state.condition2Mode = 'DIRECT';
+            }
+        }
+    }
 
     const currentActiveMode = (state.historyModes.length > 0) ? state.historyModes[state.historyModes.length - 1] : (state.mode === "NORMAL" ? "N" : "R");
     
@@ -937,35 +959,30 @@ async function runPredict(userId, chatId) {
         sentPeriods[userId].delete(sentPeriods[userId].values().next().value);
     }
 
-    const signal = decidePrediction(list, st.level, userId);
-    // USER SKIP LOGIC (Condition 1 & 2)
+    // USER PREDICTION LOGIC (Condition 1 & 2)
     try {
-        const last6 = list.slice(0, 6) || [];
-        const seq6 = last6.map(i => {
-            const n = parseInt(i.number || i.winNumber || 0);
-            return n >= 5 ? "B" : "S";
-        }).join("");
-        
+        const last6Arr = list.slice(0, 6) || [];
+        const seq6 = last6Arr.map(i => (parseInt(i.number || i.winNumber || 0) >= 5 ? "B" : "S")).join("");
         const seq4 = seq6.substring(0, 4);
 
-        if ((seq6 === "BBBSSS" || seq6 === "SSSBBB") && !state.isSkipping) {
+        if (seq6 === "BBBSSS" || seq6 === "SSSBBB") {
             state.isSkipping = true;
             state.skipCount = 1;
             state.skipTotal = 5;
-            state.skipWatch = true;
-            await send(chatId, `⏳ Condition 1 Met: Detected ${seq6} — skipping ${state.skipTotal} predictions.`);
+            state.condition2Active = false;
+            await send(chatId, `⏳ Condition 1 Met: Detected ${seq6} — skipping next 5 predictions.`);
             return setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 3000);
-        } else if ((seq4 === "BSBS" || seq4 === "SBSB") && !state.isSkipping) {
-            state.isSkipping = true;
-            state.skipCount = 1;
-            state.skipTotal = 3;
-            state.skipWatch = true;
-            await send(chatId, `⏳ Condition 2 Met: Detected ${seq4} — skipping ${state.skipTotal} predictions.`);
-            return setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 3000);
+        } else if (seq4 === "BSBS" || seq4 === "SBSB") {
+            state.condition2Active = true;
+            state.condition2Mode = 'OPPOSITE';
+            state.isSkipping = false;
+            await send(chatId, `🎯 Condition 2 Met: Detected ${seq4} — starting OPPOSITE mode.`);
         }
     } catch (e) {
-        console.error('[USER SKIP ERR]', e && e.message);
+        console.error('[USER LOGIC ERR]', e && e.message);
     }
+    
+    const signal = decidePrediction(list, st.level, userId);
     if(!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
 
     let abLine = "🤖 AutoBet: OFF";
