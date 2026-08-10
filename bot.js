@@ -8,7 +8,7 @@ const { captchaLogin } = require('./captcha-solver-free');
 // ============================================================
 //  CONFIG
 // ============================================================
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8756624614:AAELs5o_lC8e4Gttzz7QQxhxzUPs5T-94Zs";
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8756624614:AAFlSOH_BPeFlC-CK-ZFj51isT4TdfeLfP8";
 const OWNER_ID     = 1865939951;
 const OWNER_IDS    = [OWNER_ID, 8321379592];
 const OWNER_PASS   = "praveensaran";
@@ -228,7 +228,7 @@ async function getLiveBalance(userId, chatId = null) {
 
 function initUser(id) {
     if (!stats[id])        stats[id]        = { total:0,win:0,loss:0,lossStreak:0,winStreak:0,maxWinStreak:0,maxLossStreak:0 };
-    if (!userStates[id])   userStates[id]   = { resultHistory:[], skipCount:0, currentMode:null, lastPrediction:null, isSkipping:false, condition2Active:false, condition2Mode:null };
+    if (!userStates[id])   userStates[id]   = { resultHistory:[], skipCount:0, currentMode:null, lastPrediction:null, isSkipping:false };
     if (!sentPeriods[id])  sentPeriods[id]  = new Set();
     if (!autobetCfg[id])   autobetCfg[id]   = { 
         watch:false, 
@@ -622,17 +622,39 @@ function decidePrediction(list, currentLevel, userId) {
     initState(userId);
     const state = userStates[userId];
 
-    // Condition 2 special mode
-    if (state.condition2Active) {
-        const lastResult = (parseInt(list[0].number || list[0].winNumber || 0) >= 5) ? "BIG" : "SMALL";
-        if (state.condition2Mode === 'OPPOSITE') {
-            const pred = (lastResult === "BIG" ? "SMALL" : "BIG");
-            return { type: "SIZE", val: pred, conf: 90, pat: "OPPOSITE" };
-        } else if (state.condition2Mode === 'DIRECT') {
-            return { type: "SIZE", val: lastResult, conf: 90, pat: "DIRECT" };
+    // CONDITION 1: Check last 6 pattern: BIG BIG BIG SMALL SMALL SMALL (or reverse)
+    if (list.length >= 6) {
+        const last6 = buildBSFromList(list, 6);
+        const seq = last6.map(s => s.toUpperCase()); // most recent first
+        const condA = seq.join(" ") === "BIG BIG BIG SMALL SMALL SMALL";
+        const condB = seq.join(" ") === "SMALL SMALL SMALL BIG BIG BIG";
+        if (condA || condB) {
+            return { type: "SIZE", val: "SKIP", conf: 100, pat: "COND1", action: { skip: 5 } };
         }
     }
 
+    // CONDITION 2: Check last 4 alternating patterns: B S B S or S B S B
+    if (list.length >= 4) {
+        const last4 = buildBSFromList(list, 4).map(s => s.toUpperCase());
+        const alt1 = last4.join(" ") === "BIG SMALL BIG SMALL";
+        const alt2 = last4.join(" ") === "SMALL BIG SMALL BIG";
+        if (alt1 || alt2) {
+            // prediction = opposite of the most recent result
+            const recent = last4[0];
+            const prediction = recent === "BIG" ? "SMALL" : "BIG";
+            // activate opposite-mode in user state so subsequent calls continue it until a loss
+            state.oppositeMode = { active: true, dir: prediction };
+            // immediateBet: cancel current skip and place one immediate bet at L3; afterLossSkip: 6
+            return { type: "SIZE", val: prediction, conf: 92, pat: "COND2", action: { opposite: true, immediateBet: true, afterLossSkip: 6, immediateLevel: 3 } };
+        }
+    }
+
+    // If an opposite-mode is active (from Condition 2), continue with it
+    if (state && state.oppositeMode && state.oppositeMode.active && state.oppositeMode.dir) {
+        return { type: "SIZE", val: state.oppositeMode.dir, conf: 90, pat: "COND2_CONTINUE" };
+    }
+
+    // Fallback: majority of last 5
     const last5 = buildBSFromList(list, 5).map(size => size === "BIG" ? "B" : "S");
     const bigCount = last5.filter(value => value === "B").length;
     const smallCount = last5.filter(value => value === "S").length;
@@ -657,12 +679,14 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betAmount = null) 
     state.lastPredictionWasLoss = !wasWin;
     state.periodCounter++;
 
-    // Condition 2 state transition
-    if (state.condition2Active) {
-        if (state.condition2Mode === 'OPPOSITE') {
-            if (!wasWin) {
-                state.condition2Mode = 'DIRECT';
-            }
+    // Manage opposite-mode (Condition 2): continue predicting opposite direction until a loss
+    if (state.oppositeMode && state.oppositeMode.active) {
+        if (wasWin) {
+            // keep opposite-mode active
+        } else {
+            // on first loss, deactivate opposite-mode and fall back to normal logic
+            state.oppositeMode.active = false;
+            delete state.oppositeMode.dir;
         }
     }
 
@@ -747,36 +771,59 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betAmount = null) 
         }
 
         if (betPlaced) {
-            if (wasWin) {
-                st.level = 1;
-                st.consecutiveLoss = 0;
-            } else {
-                const lostLevel = st.level;
-                st.consecutiveLoss++;
-                st.level++;
-
-                const skipPredictions = lostLevel === 8 ? 3 :
-                    lostLevel === 5 ? 5 : 0;
-                const watchRequired = {
-                    3: 2,
-                    4: 3,
-                    6: 2,
-                    7: 4,
-                    9: 4,
-                    10: 4,
-                    11: 2,
-                    12: 2,
-                    13: 2
-                }[lostLevel] || 0;
-                if (skipPredictions > 0) {
+            // Special handling for Condition-2 immediate bet
+            if (state.condition2Immediate) {
+                const afterLossSkip = Number(state.condition2Immediate.afterLossSkip) || 6;
+                if (wasWin) {
+                    st.level = 1;
+                    st.consecutiveLoss = 0;
+                } else {
+                    // do not increment level; record a loss and schedule a skip of N predictions
+                    st.consecutiveLoss++;
                     state.isSkipping = true;
                     state.skipCount = 1;
-                    state.skipTotal = skipPredictions;
-                } else if (watchRequired > 0) {
-                    state.levelWatchActive = true;
-                    state.levelWatchLosses = 0;
-                    state.levelWatchTarget = st.level;
-                    state.levelWatchRequired = watchRequired;
+                    state.skipTotal = afterLossSkip;
+                    state.skipWatch = true;
+                    // after skip, move to next level relative to the immediate bet level (if provided)
+                    const immLevel = Number(state.condition2Immediate && state.condition2Immediate.immediateLevel) || Number(st.level) || 1;
+                    const nextLvl = immLevel + 1;
+                    const maxLvl = (cfg && Number(cfg.maxLvl)) ? Number(cfg.maxLvl) : nextLvl;
+                    state.postSkipSetLevel = Math.min(nextLvl, maxLvl);
+                }
+                delete state.condition2Immediate;
+            } else {
+                if (wasWin) {
+                    st.level = 1;
+                    st.consecutiveLoss = 0;
+                } else {
+                    const lostLevel = st.level;
+                    st.consecutiveLoss++;
+                    st.level++;
+
+                    const skipPredictions = lostLevel === 8 ? 3 :
+                        lostLevel === 5 ? 5 : 0;
+                    const watchRequired = {
+                        3: 2,
+                        4: 3,
+                        5:2,
+                        6: 2,
+                        7: 4,
+                        9: 4,
+                        10: 4,
+                        11: 2,
+                        12: 2,
+                        13: 2
+                    }[lostLevel] || 0;
+                    if (skipPredictions > 0) {
+                        state.isSkipping = true;
+                        state.skipCount = 1;
+                        state.skipTotal = skipPredictions;
+                    } else if (watchRequired > 0) {
+                        state.levelWatchActive = true;
+                        state.levelWatchLosses = 0;
+                        state.levelWatchTarget = st.level;
+                        state.levelWatchRequired = watchRequired;
+                    }
                 }
             }
         } else {
@@ -797,6 +844,19 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betAmount = null) 
             state.skipWatch = false;
         }
     }
+
+        // New rule: if user is suffering 3 consecutive losses (virtual), trigger a 3-prediction skip then set next bet level to L4
+        try {
+            if (st && st.consecutiveLoss >= 3 && !state.isSkipping && !state.postSkipSetLevel) {
+                state.isSkipping = true;
+                state.skipCount = 1;
+                state.skipTotal = 3;
+                state.skipWatch = true;
+                state.postSkipSetLevel = 4; // after skip, set level to L4
+            }
+        } catch (e) {
+            console.error('[POST-SKIP SET ERR]', e && e.message);
+        }
 }
 
 // ============================================================
@@ -959,30 +1019,60 @@ async function runPredict(userId, chatId) {
         sentPeriods[userId].delete(sentPeriods[userId].values().next().value);
     }
 
-    // USER PREDICTION LOGIC (Condition 1 & 2)
+    const signal = decidePrediction(list, st.level, userId);
+    // If Condition 2 requested an immediate bet, cancel current skip and mark immediate flag
     try {
-        const last6Arr = list.slice(0, 6) || [];
-        const seq6 = last6Arr.map(i => (parseInt(i.number || i.winNumber || 0) >= 5 ? "B" : "S")).join("");
-        const seq4 = seq6.substring(0, 4);
-
-        if (seq6 === "BBBSSS" || seq6 === "SSSBBB") {
-            state.isSkipping = true;
-            state.skipCount = 1;
-            state.skipTotal = 5;
-            state.condition2Active = false;
-            await send(chatId, `⏳ Condition 1 Met: Detected ${seq6} — skipping next 5 predictions.`);
-            return setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 3000);
-        } else if (seq4 === "BSBS" || seq4 === "SBSB") {
-            state.condition2Active = true;
-            state.condition2Mode = 'OPPOSITE';
+        if (signal && signal.action && signal.action.immediateBet) {
+            // cancel any active skipping
             state.isSkipping = false;
-            await send(chatId, `🎯 Condition 2 Met: Detected ${seq4} — starting OPPOSITE mode.`);
+            state.skipCount = 0;
+            state.skipTotal = 0;
+            state.skipWatch = false;
+            // mark condition2 immediate context so updateAfterResult can handle special loss behavior
+            // choose immediate level: explicit action.immediateLevel or next level (st.level + 1)
+            const explicitLvl = (signal.action && typeof signal.action.immediateLevel !== 'undefined') ? Number(signal.action.immediateLevel) : null;
+            const nextLvl = (st && Number(st.level)) ? Number(st.level) + 1 : 1;
+            state.condition2Immediate = { afterLossSkip: Number(signal.action.afterLossSkip) || 6, immediateLevel: explicitLvl || nextLvl };
+            await send(chatId, `⚡ Condition 2 triggered — cancelling skip and placing 1 immediate bet (opposite).`);
         }
     } catch (e) {
-        console.error('[USER LOGIC ERR]', e && e.message);
+        console.error('[COND2 IMMEDIATE ERR]', e && e.message);
     }
-    
-    const signal = decidePrediction(list, st.level, userId);
+    // Handle action requests from prediction (e.g., skip N predictions)
+    try {
+        if (signal && signal.action && signal.action.skip && !state.isSkipping) {
+            const skipNum = Number(signal.action.skip) || 5;
+            state.isSkipping = true;
+            state.skipCount = 1;
+            state.skipTotal = skipNum;
+            state.skipWatch = true;
+            await send(chatId, `⏳ Condition 1 matched — skipping ${state.skipTotal} predictions.`);
+            return setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 3000);
+        }
+    } catch (e) {
+        console.error('[COND1 HANDLER ERR]', e && e.message);
+    }
+    // If any number appears 3 or more times in the last 5 results, skip next 3 predictions
+    try {
+        const last5nums = (list.slice(0,5) || []).map(i => {
+            const v = i.result || i.number || i.winNumber || i.winResult || i.win || i.win_num || 0;
+            return String(v).trim();
+        });
+        const counts = {};
+        for (const n of last5nums) counts[n] = (counts[n] || 0) + 1;
+        const repeated = Object.entries(counts).find(([n,c]) => c >= 3 && n !== "0");
+        if (repeated && !state.isSkipping) {
+            const [num, cnt] = repeated;
+            state.isSkipping = true;
+            state.skipCount = 1;
+            state.skipTotal = 3;
+            state.skipWatch = true;
+            await send(chatId, `⏳ Detected result ${num} repeated ${cnt} times in last 5 results — skipping ${state.skipTotal} predictions.`);
+            return setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 3000);
+        }
+    } catch (e) {
+        console.error('[SKIP DETECT ERR]', e && e.message);
+    }
     if(!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
 
     let abLine = "🤖 AutoBet: OFF";
@@ -999,6 +1089,13 @@ async function runPredict(userId, chatId) {
             state.isSkipping = false;
             state.skipCount = 0;
             state.skipTotal = 0;
+            // Apply post-skip level if requested (e.g., set to L4 after skipping)
+            if (state.postSkipSetLevel && st) {
+                const newLvl = Number(state.postSkipSetLevel) || 1;
+                st.level = newLvl;
+                delete state.postSkipSetLevel;
+                await send(chatId, `🔁 Skip complete — setting next bet level to L${st.level}.`);
+            }
         }
     } else if (signal.val === "SKIP") {
         abLine = "⏭️ SKIP: Big/Small tied";
@@ -1043,85 +1140,20 @@ waitLine+"\n"+
     );
 
     if (signal.val === "SKIP") {
-            updateAfterResult(userId, win, actual, betPlaced, betAmount);
-        
-            const s = stats[userId];
-            s.total++;
-            if (win) {
-                s.win++; s.winStreak++; s.lossStreak = 0;
-                if (s.winStreak > s.maxWinStreak) s.maxWinStreak = s.winStreak;
-            } else {
-                s.loss++; s.lossStreak++; s.winStreak = 0;
-                if (s.lossStreak > s.maxLossStreak) s.maxLossStreak = s.lossStreak;
-            }
-        
-            if (betPlaced) {
-                if (win) await handleWin(userId, chatId, actual, num, betLevel, betAmount);
-                else await handleLoss(userId, chatId, actual, num, betLevel, betAmount);
-            
-                if (!hasAccess(userId)) {
-                    running[userId] = false;
-                    stopAfterWin[userId] = false;
-                    await send(chatId, "⏰ Your access has expired. The bot has been stopped after settling the current bet.");
-                    return;
-                }
-            
-                if (win && stopAfterWin[userId]) {
-                    const ownerChatId = stopAfterWin[userId];
-                    running[userId] = false;
-                    stopAfterWin[userId] = false;
-                    if (ownerChatId === userId) {
-                        await send(chatId, "✅ Bet WIN received. Your bot is now stopped.");
-                    } else {
-                        await send(chatId, "🛑 Owner stopped the bot after your bet WIN. Bot is now stopped.");
-                        await send(ownerChatId, "✅ User " + userId + " won the current bet and was stopped by Stop All Users.");
-                    }
-                    return;
-                }
-            
-                const targetProfit = Number(cfg.targetProfit) || 1000;
-                if (pt.pnl >= targetProfit) {
-                    st.isWaiting = true;
-                    st.nextStartTime = Date.now() + (Number(cfg.restartDelay) || 1) * 60 * 1000;
-                    await send(chatId, "🎯 TARGET REACHED! Bot Paused.");
-                }
-            } else {
-                if (win) {
-                    await send(chatId, 
-                        "╔══════════════════════════╗\n"+
-                        "║  👀 WATCH RESULT: WIN! ✅ ║\n"+
-                        "╠══════════════════════════╣\n"+
-                        "║ Number : "+num+"\n"+
-                        "║ Result : "+actual+"\n"+
-                        "║ Status : Correct Prediction\n"+
-                        "╚══════════════════════════╝"
-                    );
-                    await sendSticker(chatId, WIN_STICKER);
-                } else {
-                    await send(chatId, 
-                        "╔══════════════════════════╗\n"+
-                        "║  👀 WATCH RESULT: LOSS ❌ ║\n"+
-                        "╠══════════════════════════╣\n"+
-                        "║ Number : "+num+"\n"+
-                        "║ Result : "+actual+"\n"+
-                        "║ Status : Incorrect Prediction\n"+
-                        "╚══════════════════════════╝"
-                    );
-                    await sendSticker(chatId, LOSS_STICKER);
-                }
-            }
         return setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 3000);
     }
 
     let betPlaced = false;
     let betAmount = null;
-    if (canBet) { 
-        const result = await placeBet(userId, chatId, next, signal.val, signal.type, st.level);
+    let levelToUse = st.level;
+    if (canBet) {
+        levelToUse = (state.condition2Immediate && state.condition2Immediate.immediateLevel) || (signal.action && signal.action.immediateLevel) || st.level;
+        const result = await placeBet(userId, chatId, next, signal.val, signal.type, levelToUse);
         if (result && result.ok) {
             betPlaced = true;
             betAmount = result.amt;
             activeBets[userId] = true;
-            await send(chatId, "✅ Bet Success! ₹" + result.amt + " L" + st.level + "\n⏳ Checking result...");
+            await send(chatId, "✅ Bet Success! ₹" + result.amt + " L" + levelToUse + "\n⏳ Checking result...");
         } else if (result && !result.ok) {
             await send(chatId, "❌ Bet Failed: " + (result.msg || "Unknown error"));
         } else {
@@ -1129,18 +1161,23 @@ waitLine+"\n"+
         }
     }
 
-    if (canBet && !betPlaced) {
-        await send(chatId, "🔁 Bet not placed. Retrying the same L" + st.level + " on the next period...");
+    if (!canBet) {
         return setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 3000);
     }
 
-    checkResult(userId, chatId, next, signal.val, signal.type, betPlaced, betAmount);
+    if (canBet && !betPlaced) {
+        const retryLvl = (state.condition2Immediate && state.condition2Immediate.immediateLevel) || (signal.action && signal.action.immediateLevel) || st.level;
+        await send(chatId, "🔁 Bet not placed. Retrying the same L" + retryLvl + " on the next period...");
+        return setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 3000);
+    }
+
+    checkResult(userId, chatId, next, signal.val, signal.type, betPlaced, betAmount, levelToUse);
 }
 
 // ============================================================
 //  RESULT CHECKER
 // ============================================================
-async function checkResult(userId, chatId, target, predicted, predType, betPlaced, betAmount = null) {
+async function checkResult(userId, chatId, target, predicted, predType, betPlaced, betAmount = null, betLevel = null) {
     let tries = 0;
     const cfg = autobetCfg[userId];
     const st = autobetState[userId];
@@ -1169,7 +1206,7 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         else actual = num === 0 ? "RED" : num === 5 ? "GREEN" : num % 2 === 0 ? "RED" : "GREEN";
         
         const win = predicted === actual;
-        const betLevel = st.level;
+        const actualBetLevel = betLevel || st.level;
 
         updateAfterResult(userId, win, actual, betPlaced, betAmount);
 
@@ -1184,8 +1221,8 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         }
 
         if (betPlaced) {
-            if (win) await handleWin(userId, chatId, actual, num, betLevel, betAmount);
-            else await handleLoss(userId, chatId, actual, num, betLevel, betAmount);
+            if (win) await handleWin(userId, chatId, actual, num, actualBetLevel, betAmount);
+            else await handleLoss(userId, chatId, actual, num, actualBetLevel, betAmount);
 
             if (!hasAccess(userId)) {
                 running[userId] = false;
