@@ -8,7 +8,7 @@ const { captchaLogin } = require('./captcha-solver-free');
 // ============================================================
 //  CONFIG
 // ============================================================
-const BOT_TOKEN    = process.env.BOT_TOKEN || "8756624614:AAFlSOH_BPeFlC-CK-ZFj51isT4TdfeLfP8";
+const BOT_TOKEN    = process.env.BOT_TOKEN || "8756624614:AAGl96Iyk96cuweqlwpPUWIOsBWNc8OS02Q";
 const OWNER_ID     = 1865939951;
 const OWNER_IDS    = [OWNER_ID, 8321379592];
 const OWNER_PASS   = "praveensaran";
@@ -803,6 +803,7 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betAmount = null) 
                     const skipPredictions = lostLevel === 8 ? 3 :
                         lostLevel === 5 ? 5 : 0;
                     const watchRequired = {
+                        2: 3,
                         3: 2,
                         4: 3,
                         5:2,
@@ -900,6 +901,7 @@ async function handleLoss(userId, chatId, actual, num, betLevel, betAmount = nul
     updateTrackedBalance(userId, -amt);
     const scheduledSkip = betLevel === 8 ? 3 : betLevel === 5 ? 5 : 0;
     const watchRequired = {
+        2: 3,
         3: 2,
         4: 3,
         6: 2,
@@ -1029,10 +1031,10 @@ async function runPredict(userId, chatId) {
             state.skipTotal = 0;
             state.skipWatch = false;
             // mark condition2 immediate context so updateAfterResult can handle special loss behavior
-            // choose immediate level: explicit action.immediateLevel or next level (st.level + 1)
+            // choose immediate level: explicit action.immediateLevel or current level (st.level)
             const explicitLvl = (signal.action && typeof signal.action.immediateLevel !== 'undefined') ? Number(signal.action.immediateLevel) : null;
-            const nextLvl = (st && Number(st.level)) ? Number(st.level) + 1 : 1;
-            state.condition2Immediate = { afterLossSkip: Number(signal.action.afterLossSkip) || 6, immediateLevel: explicitLvl || nextLvl };
+            const currentLvl = (st && Number(st.level)) ? Number(st.level) : 1;
+            state.condition2Immediate = { afterLossSkip: Number(signal.action.afterLossSkip) || 6, immediateLevel: explicitLvl || currentLvl };
             await send(chatId, `⚡ Condition 2 triggered — cancelling skip and placing 1 immediate bet (opposite).`);
         }
     } catch (e) {
@@ -1942,6 +1944,12 @@ function addHandlers(){
             if(allUsersStopped && !isOwner(id)) return send(msg.chat.id, "🛑 Owner has stopped all users. Please wait until the owner starts all bots.");
             if(!hasAccess(id))return send(msg.chat.id,"❌ No access!\n📩 "+ADMIN_HANDLE+"\nID: "+id);
             if(running[id])return send(msg.chat.id,"⚠️ Already running!");
+            if (autobetState[id] && Number(autobetState[id].level) > 1) {
+                running[id] = false;
+                stopAfterWin[id] = false;
+                delete activeBets[id];
+                return send(msg.chat.id, "🛑 Existing level state detected (L" + autobetState[id].level + "). Bot stopped. Reset before starting.");
+            }
 
             running[id]=true;sentPeriods[id]=new Set();
             stopAfterWin[id] = false;
