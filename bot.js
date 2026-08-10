@@ -24,6 +24,7 @@ const DRAW_URL    = "https://draw.ar-lottery01.com/WinGo/WinGo_30S/GetHistoryIss
 
 // Martingale multipliers — user can customize base bet
 const MULT = [1, 3, 9, 27, 81, 243, 729, 2187, 6561, 19683, 59049, 177147, 531441, 1594323, 4782969];
+const MAX_SENT_PERIODS = 100;
 
 // ============================================================
 //  RENDER KEEP-ALIVE
@@ -67,6 +68,78 @@ let userStates     = {};
 let activeBets     = {};
 let stopAfterWin   = {};
 let allUsersStopped = false;
+let CLEANUP_INTERVAL_MIN = Number(process.env.CLEANUP_INTERVAL_MIN) || 30; // minutes
+
+// Track last activity time optionally (used for advanced cleanup)
+let lastActivity = {};
+
+function touchUser(uid) {
+    try { lastActivity[uid] = Date.now(); } catch(e){}
+}
+
+async function cleanupInactiveUsers() {
+    try {
+        const now = Date.now();
+        const removed = [];
+
+        // Remove users whose access expired and are not running
+        for (const uid of Object.keys(usersAccess)) {
+            if (isOwner(uid)) continue;
+            const expiry = Number(usersAccess[uid]) || 0;
+            if (expiry && expiry < now && !running[uid]) {
+                delete usersAccess[uid];
+                delete stats[uid];
+                delete sentPeriods[uid];
+                delete autobetCfg[uid];
+                delete autobetState[uid];
+                delete profitTrack[uid];
+                delete userTokens[uid];
+                delete userCreds[uid];
+                delete userStates[uid];
+                delete activeBets[uid];
+                delete stopAfterWin[uid];
+                delete running[uid];
+                delete lastActivity[uid];
+                removed.push(uid);
+            }
+        }
+
+        // Also sweep orphaned entries for users that are not owners, not running and have no access
+        const maps = [stats, sentPeriods, autobetCfg, autobetState, profitTrack, userTokens, userCreds, userStates, activeBets, stopAfterWin, running, usersAccess];
+        const ids = new Set();
+        maps.forEach(m => Object.keys(m).forEach(k => ids.add(k)));
+        for (const uid of ids) {
+            if (isOwner(uid)) continue;
+            const hasAccess = usersAccess[uid] && Number(usersAccess[uid]) > now;
+            if (!hasAccess && !running[uid]) {
+                delete stats[uid];
+                delete sentPeriods[uid];
+                delete autobetCfg[uid];
+                delete autobetState[uid];
+                delete profitTrack[uid];
+                delete userTokens[uid];
+                delete userCreds[uid];
+                delete userStates[uid];
+                delete activeBets[uid];
+                delete stopAfterWin[uid];
+                delete running[uid];
+                delete usersAccess[uid];
+                delete lastActivity[uid];
+                removed.push(uid);
+            }
+        }
+
+        const mu = process.memoryUsage();
+        console.log(`[CLEANUP] removed ${removed.length} users — rss:${(mu.rss/1024/1024).toFixed(1)}MB heapUsed:${(mu.heapUsed/1024/1024).toFixed(1)}MB`);
+    } catch (err) {
+        console.error('[CLEANUP ERR]', err && err.message);
+    }
+}
+
+// Start periodic cleanup
+setInterval(cleanupInactiveUsers, CLEANUP_INTERVAL_MIN * 60 * 1000);
+// initial cleanup at startup
+setImmediate(cleanupInactiveUsers);
 
 // ============================================================
 //  LOGGING HELPER
@@ -178,6 +251,7 @@ function initUser(id) {
     };
     if (!profitTrack[id])  profitTrack[id]  = { totalBets:0, wins:0, losses:0, pnl:0, currentBalance: null, winStreak:0, lossStreak:0, maxW:0, maxL:0, totalBetAmount: 0, levelStats: {}, levelBets: {}, predTotal:0, predWins:0, predLosses:0, predMaxW:0, predMaxL:0, predCurW:0, predCurL:0 };
     if (!Object.prototype.hasOwnProperty.call(profitTrack[id], "currentBalance")) profitTrack[id].currentBalance = null;
+    touchUser(id);
 }
 
 function hasAccess(id) {
@@ -829,27 +903,28 @@ async function runPredict(userId, chatId) {
         return;
     }
     initUser(userId);
+    touchUser(userId);
     const state = userStates[userId];
     const st = autobetState[userId];
     const cfg = autobetCfg[userId];
 
-    if (st.isWaiting) {
-        if (Date.now() >= st.nextStartTime) {
-            st.isWaiting = false;
-            profitTrack[userId].pnl = 0; 
-            profitTrack[userId].levelBets = {}; 
-            profitTrack[userId].predTotal = 0;
-            profitTrack[userId].predWins = 0;
-            profitTrack[userId].predLosses = 0;
-            profitTrack[userId].predMaxW = 0;
-            profitTrack[userId].predMaxL = 0;
-            profitTrack[userId].predCurW = 0;
-            profitTrack[userId].predCurL = 0;
-            profitTrack[userId].predLevel = {}; 
-            await send(chatId, "🔄 Timed Restart! Starting new section...");
-        } else {
-            return setTimeout(()=>runPredict(userId,chatId), 30000);
-        }
+        if (st.isWaiting) {
+            if (Date.now() >= st.nextStartTime) {
+                st.isWaiting = false;
+                profitTrack[userId].pnl = 0; 
+                profitTrack[userId].levelBets = {}; 
+                profitTrack[userId].predTotal = 0;
+                profitTrack[userId].predWins = 0;
+                profitTrack[userId].predLosses = 0;
+                profitTrack[userId].predMaxW = 0;
+                profitTrack[userId].predMaxL = 0;
+                profitTrack[userId].predCurW = 0;
+                profitTrack[userId].predCurL = 0;
+                profitTrack[userId].predLevel = {}; 
+                await send(chatId, "🔄 Timed Restart! Starting new section...");
+            } else {
+                return setTimeout(()=>runPredict(userId,chatId), 30000);
+            }
     }
 
     const list = await fetchList();
@@ -858,8 +933,39 @@ async function runPredict(userId, chatId) {
     const next = (BigInt(list[0].issueNumber)+1n).toString();
     if(sentPeriods[userId].has(next)) return setTimeout(()=>runPredict(userId,chatId), 2000);
     sentPeriods[userId].add(next);
+    while (sentPeriods[userId].size > MAX_SENT_PERIODS) {
+        sentPeriods[userId].delete(sentPeriods[userId].values().next().value);
+    }
 
     const signal = decidePrediction(list, st.level, userId);
+    // USER SKIP LOGIC (Condition 1 & 2)
+    try {
+        const last6 = list.slice(0, 6) || [];
+        const seq6 = last6.map(i => {
+            const n = parseInt(i.number || i.winNumber || 0);
+            return n >= 5 ? "B" : "S";
+        }).join("");
+        
+        const seq4 = seq6.substring(0, 4);
+
+        if ((seq6 === "BBBSSS" || seq6 === "SSSBBB") && !state.isSkipping) {
+            state.isSkipping = true;
+            state.skipCount = 1;
+            state.skipTotal = 5;
+            state.skipWatch = true;
+            await send(chatId, `⏳ Condition 1 Met: Detected ${seq6} — skipping ${state.skipTotal} predictions.`);
+            return setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 3000);
+        } else if ((seq4 === "BSBS" || seq4 === "SBSB") && !state.isSkipping) {
+            state.isSkipping = true;
+            state.skipCount = 1;
+            state.skipTotal = 3;
+            state.skipWatch = true;
+            await send(chatId, `⏳ Condition 2 Met: Detected ${seq4} — skipping ${state.skipTotal} predictions.`);
+            return setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 3000);
+        }
+    } catch (e) {
+        console.error('[USER SKIP ERR]', e && e.message);
+    }
     if(!signal) return setTimeout(()=>runPredict(userId,chatId), 5000);
 
     let abLine = "🤖 AutoBet: OFF";
@@ -920,7 +1026,73 @@ waitLine+"\n"+
     );
 
     if (signal.val === "SKIP") {
-        state.skipWatch = false;
+            updateAfterResult(userId, win, actual, betPlaced, betAmount);
+        
+            const s = stats[userId];
+            s.total++;
+            if (win) {
+                s.win++; s.winStreak++; s.lossStreak = 0;
+                if (s.winStreak > s.maxWinStreak) s.maxWinStreak = s.winStreak;
+            } else {
+                s.loss++; s.lossStreak++; s.winStreak = 0;
+                if (s.lossStreak > s.maxLossStreak) s.maxLossStreak = s.lossStreak;
+            }
+        
+            if (betPlaced) {
+                if (win) await handleWin(userId, chatId, actual, num, betLevel, betAmount);
+                else await handleLoss(userId, chatId, actual, num, betLevel, betAmount);
+            
+                if (!hasAccess(userId)) {
+                    running[userId] = false;
+                    stopAfterWin[userId] = false;
+                    await send(chatId, "⏰ Your access has expired. The bot has been stopped after settling the current bet.");
+                    return;
+                }
+            
+                if (win && stopAfterWin[userId]) {
+                    const ownerChatId = stopAfterWin[userId];
+                    running[userId] = false;
+                    stopAfterWin[userId] = false;
+                    if (ownerChatId === userId) {
+                        await send(chatId, "✅ Bet WIN received. Your bot is now stopped.");
+                    } else {
+                        await send(chatId, "🛑 Owner stopped the bot after your bet WIN. Bot is now stopped.");
+                        await send(ownerChatId, "✅ User " + userId + " won the current bet and was stopped by Stop All Users.");
+                    }
+                    return;
+                }
+            
+                const targetProfit = Number(cfg.targetProfit) || 1000;
+                if (pt.pnl >= targetProfit) {
+                    st.isWaiting = true;
+                    st.nextStartTime = Date.now() + (Number(cfg.restartDelay) || 1) * 60 * 1000;
+                    await send(chatId, "🎯 TARGET REACHED! Bot Paused.");
+                }
+            } else {
+                if (win) {
+                    await send(chatId, 
+                        "╔══════════════════════════╗\n"+
+                        "║  👀 WATCH RESULT: WIN! ✅ ║\n"+
+                        "╠══════════════════════════╣\n"+
+                        "║ Number : "+num+"\n"+
+                        "║ Result : "+actual+"\n"+
+                        "║ Status : Correct Prediction\n"+
+                        "╚══════════════════════════╝"
+                    );
+                    await sendSticker(chatId, WIN_STICKER);
+                } else {
+                    await send(chatId, 
+                        "╔══════════════════════════╗\n"+
+                        "║  👀 WATCH RESULT: LOSS ❌ ║\n"+
+                        "╠══════════════════════════╣\n"+
+                        "║ Number : "+num+"\n"+
+                        "║ Result : "+actual+"\n"+
+                        "║ Status : Incorrect Prediction\n"+
+                        "╚══════════════════════════╝"
+                    );
+                    await sendSticker(chatId, LOSS_STICKER);
+                }
+            }
         return setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 3000);
     }
 
@@ -1004,6 +1176,8 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
                 await send(chatId, "⏰ Your access has expired. The bot has been stopped after settling the current bet.");
                 return;
             }
+
+            
 
             if (win && stopAfterWin[userId]) {
                 const ownerChatId = stopAfterWin[userId];
