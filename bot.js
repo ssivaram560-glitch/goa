@@ -49,7 +49,8 @@ const DEFAULT_MAX_LVL = 15;
 function getLevelLossRule(lostLevel) {
     const lvl = Number(lostLevel) || 1;
     if (lvl >= 5) return { type: 'skip', skipPeriods: 5 };
-    if (lvl >= 3) return { type: 'watch', lossesRequired: 2 };
+    if (lvl === 3) return { type: 'watch', lossesRequired: 2 };
+    if (lvl === 4) return { type: 'watch', lossesRequired: 2 };
     return { type: 'none' };
 }
 function getNextLevelAfterLoss(lostLevel, maxLvl) {
@@ -952,7 +953,7 @@ function decidePrediction(list, currentLevel, userId) {
     };
 }
 
-function updateAfterResult(userId, wasWin, actual, betPlaced, betAmount = null) {
+function updateAfterResult(userId, wasWin, actual, betPlaced, betAmount = null, chatId = null) {
     initState(userId);
     const state = userStates[userId];
     const st = autobetState[userId];
@@ -1063,19 +1064,40 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betAmount = null) 
                 const maxLvl = Math.min(Number(cfg.maxLvl) || 15, 15);
                 const lostLv = Number(st.level) || 1;
                 st.consecutiveLoss++;
+
+                // Advance to the NEXT level immediately on loss — never repeat the same level bet.
+                // (Watch/Skip windows run AFTER the level is already advanced, so the next real bet
+                // uses the advanced level's amount, e.g. lose L3 -> next bet is L4 amount.)
                 if (lostLv < maxLvl) {
                     st.level = lostLv + 1;
                 }
+                // Clear any stale condition-immediate overrides whose level no longer matches —
+                // this guarantees the next bet amount is always the NEW level's amount.
+                if (state.condition2Immediate && state.condition2Immediate.immediateLevel !== Number(st.level)) delete state.condition2Immediate;
+                if (state.condition3Immediate && state.condition3Immediate.immediateLevel !== Number(st.level)) delete state.condition3Immediate;
                 const rule = getLevelLossRule(lostLv);
                 if (rule.type === 'skip') {
                     state.isSkipping = true;
                     state.skipCount = 1;
                     state.skipTotal = rule.skipPeriods;
                 } else if (rule.type === 'watch') {
+                    // After L3 loss (or L4 loss): watch for 2 more losses WITHOUT betting,
+                    // then resume betting at the already-advanced next level (L4 / L5).
                     state.levelWatchActive = true;
                     state.levelWatchLosses = 0;
                     state.levelWatchTarget = st.level;
                     state.levelWatchRequired = rule.lossesRequired;
+                    // (updateAfterResult is not async — notify without blocking the result handler)
+                    try {
+                        send((chatId !== undefined && chatId !== null) ? chatId : userId,
+"╔══════════════════════════╗\n"+
+"║  ❌ LOSS at L"+lostLv+"           ║\n"+
+"╠══════════════════════════╣\n"+
+"║ Now    : WATCHING next " + rule.lossesRequired + " losses (no bets)\n"+
+"║ Next bet: L"+st.level+" after watch completes\n"+
+"╚══════════════════════════╝"
+                        ).catch(()=>{});
+                    } catch (e) {}
                 }
             }
         } else {
@@ -1085,6 +1107,12 @@ function updateAfterResult(userId, wasWin, actual, betPlaced, betAmount = null) 
                     state.levelWatchLosses = 0;
                 } else {
                     state.levelWatchLosses++;
+                }
+                if (state.levelWatchLosses >= state.levelWatchRequired) {
+                    state.levelWatchActive = false;
+                    state.levelWatchLosses = 0;
+                    state.levelWatchRequired = 0;
+                    state.levelWatchTarget = null;
                 }
             } else if (cfg && cfg.watch && !state.skipWatch) {
                 if (wasWin) {
@@ -1391,6 +1419,21 @@ async function runPredict(userId, chatId) {
         abLine = (st.level > 1 ? "📈 MART " : "💰 BET ") + "L" + st.level + ": ₹" + curBet;
     }
 
+    // FIX: Bet amount MUST come from the current level only — never use stale cached
+    // immediate-level overrides from old conditions. After a loss the level advances, so
+    // the next placed bet ALWAYS uses the NEXT level's amount (no same-amount repeats).
+    if (canBet && (state.condition2Immediate || state.condition3Immediate)) {
+        const overrideLvl = (state.condition2Immediate && state.condition2Immediate.immediateLevel)
+                         || (state.condition3Immediate && state.condition3Immediate.immediateLevel);
+        // Only honor an override while it was triggered AFTER the current level was set,
+        // i.e. the stored level matches the current level. Otherwise ignore the stale
+        // override and bet the true current level amount.
+        if (overrideLvl !== undefined && overrideLvl !== Number(st.level)) {
+            if (state.condition2Immediate) delete state.condition2Immediate;
+            if (state.condition3Immediate) delete state.condition3Immediate;
+        }
+    }
+
     const patternName = signal && signal.pat ? signal.pat : (state && state.mode ? state.mode : "NORMAL");
     const waitLine = (cfg && cfg.watch && st.level === 1 && st.consecutiveLoss < cfg.watchLoss) ? "\nWatch Loss: " + st.consecutiveLoss + "/" + cfg.watchLoss : "";
 
@@ -1416,7 +1459,10 @@ waitLine+"\n"+
     let betAmount = null;
     let levelToUse = st.level;
     if (canBet) {
-        levelToUse = (state.condition2Immediate && state.condition2Immediate.immediateLevel) || (signal.action && signal.action.immediateLevel) || st.level;
+        // FIX: Always bet at the CURRENT level — the level already advanced after the
+        // last loss, so the amount is always the next level's amount (never a repeat
+        // of the previous bet). Stale condition overrides were cleared above.
+        levelToUse = Number(st.level) || 1;
         const result = await placeBet(userId, chatId, next, signal.val, signal.type, levelToUse);
         if (result && result.ok) {
             betPlaced = true;
@@ -1431,7 +1477,7 @@ waitLine+"\n"+
     }
 
     if (canBet && !betPlaced) {
-        const retryLvl = (state.condition2Immediate && state.condition2Immediate.immediateLevel) || (signal.action && signal.action.immediateLevel) || st.level;
+        const retryLvl = Number(st.level) || 1;
         await send(chatId, "🔁 Bet not placed. Retrying the same L" + retryLvl + " on the next period...");
         return setTimeout(() => { if (running[userId]) runPredict(userId, chatId); }, 3000);
     }
@@ -1473,7 +1519,7 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
         const win = predicted === actual;
         const settledBetLevel = betLevel || st.level;
 
-        updateAfterResult(userId, win, actual, betPlaced, betAmount);
+        updateAfterResult(userId, win, actual, betPlaced, betAmount, chatId);
 
         const s = stats[userId];
         s.total++;
@@ -1757,6 +1803,10 @@ async function startAllUsers(ownerChatId) {
         userStates[uid].levelWatchLosses = 0;
         userStates[uid].levelWatchTarget = null;
         userStates[uid].levelWatchRequired = 0;
+        // FIX: Clear stale condition overrides so old levels never repeat after restart
+        delete userStates[uid].condition2Immediate;
+        delete userStates[uid].condition3Immediate;
+        delete userStates[uid].postSkipSetLevel;
         started.push(uid);
         await send(uid, "▶️ Owner started the bot for all users. Your bot is now running.");
         runPredict(uid, uid);
@@ -2203,6 +2253,10 @@ function addHandlers(){
             userStates[id].levelWatchLosses = 0;
             userStates[id].levelWatchTarget = null;
             userStates[id].levelWatchRequired = 0;
+            // FIX: Clear stale condition overrides so old levels never repeat after restart
+            delete userStates[id].condition2Immediate;
+            delete userStates[id].condition3Immediate;
+            delete userStates[id].postSkipSetLevel;
 
             const prevList = await fetchList();
             initState(id);
