@@ -1,4 +1,5 @@
 
+//  INLINED MODULE: bet-amounts.js
 const TelegramBot = require('node-telegram-bot-api');
 const axios       = require('axios');
 const crypto      = require('crypto');
@@ -6,6 +7,7 @@ const zlib        = require('zlib');
 const puppeteer   = require('puppeteer');
 const { PNG }     = require('pngjs');
 const { captchaLogin } = require('./captcha-solver-free');
+
 // ============================================================
 //  INLINED MODULE: bet-amounts.js
 // ============================================================
@@ -597,6 +599,153 @@ async function solveCaptcha(page) {
     );
     return dragDistance;
 }
+async function captchaLogin(userId, chatId, phone, password, bot, logBoth) {
+    console.log(`[LOGIN] Starting captcha login for user ${userId}...`);
+    let browser;
+    try {
+        browser = await puppeteer.launch({
+            headless: true,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--single-process',
+                '--disable-gpu',
+                '--disable-dev-shm-usage',
+                '--disable-blink-features=AutomationControlled'
+            ]
+        });
+        const page = await browser.newPage();
+        await page.setDefaultNavigationTimeout(90000);
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        await page.evaluateOnNewDocument(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        });
+        let capturedToken = null;
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+            const headers = req.headers();
+            const auth = headers['authorization'] || headers['Authorization'];
+            if (auth) {
+                const tokenClean = auth.replace(/^Bearer\s+/i, "");
+                if (tokenClean.length > 20) {
+                    capturedToken = tokenClean;
+                }
+            }
+            req.continue();
+        });
+        await page.goto('https://goaokk.com/#/login', {
+            waitUntil: 'domcontentloaded',
+            timeout: 90000
+        });
+        await page.waitForSelector('input[type="text"], input[type="tel"], input[placeholder*="Phone"], input', { timeout: 30000 });
+        await _cap_sleep(1000);
+        const phoneInput = await page.$('input[placeholder*="number"], input[type="tel"], .van-field__control');
+        if (phoneInput) {
+            await phoneInput.click({ clickCount: 3 });
+            await phoneInput.press('Backspace');
+            await phoneInput.type(phone, { delay: 50 });
+        } else {
+            const inputs = await page.$$('input');
+            await inputs[1].type(phone, { delay: 50 });
+        }
+        await _cap_sleep(500);
+        const passwordInput = await page.$('input[type="password"]');
+        if (passwordInput) {
+            await passwordInput.type(password, { delay: 50 });
+        } else {
+            const inputs = await page.$$('input');
+            await inputs[2].type(password, { delay: 50 });
+        }
+        await page.evaluate(() => {
+            const btns = Array.from(document.querySelectorAll('button'));
+            const loginBtn = btns.find(b => b.innerText.includes('Log in') || b.innerText.includes('Login'));
+            if (loginBtn) loginBtn.click();
+            else document.querySelector('form')?.submit();
+        });
+        await _cap_sleep(2000);
+        let captchaDetected = false;
+        for (let i = 0; i < 20; i++) {
+            captchaDetected = await isCaptchaVisible(page);
+            if (captchaDetected) break;
+            await _cap_sleep(500);
+        }
+        if (captchaDetected) {
+            console.log('[LOGIN] Captcha detected! Solving...');
+            try {
+                const dragDistance = await solveCaptcha(page);
+                if (dragDistance < 10 || dragDistance > 330) {
+                    console.error(`[LOGIN] Invalid drag distance: ${dragDistance}`);
+                    if (chatId) await logBoth(chatId, '❌ Captcha solve failed - invalid distance');
+                    return false;
+                }
+                const dragged = await performHumanDrag(page, dragDistance);
+                if (!dragged) {
+                    console.error('[LOGIN] Drag failed');
+                    if (chatId) await logBoth(chatId, '❌ Captcha solve failed - drag error');
+                    return false;
+                }
+                await _cap_sleep(3000);
+                const captchaStillVisible = await isCaptchaVisible(page);
+                if (captchaStillVisible) {
+                    console.log('[LOGIN] ❌ Captcha still visible - solve failed');
+                    if (chatId) await logBoth(chatId, '❌ Captcha solve failed - server rejected');
+                    return false;
+                }
+                console.log('[LOGIN] ✅ Captcha solved successfully!');
+            } catch (err) {
+                console.error(`[LOGIN] Captcha solve failed: ${err.message}`);
+                if (chatId) await logBoth(chatId, `❌ Captcha solve failed: ${err.message}`);
+                return false;
+            }
+        } else {
+            console.log('[LOGIN] No captcha appeared (might be skipped)');
+        }
+        try {
+            await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 });
+        } catch (e) {
+        }
+        await new Promise(r => setTimeout(r, 5000));
+        await page.evaluate(() => {
+            const closeBtn = document.querySelector('.van-icon-cross') || document.querySelector('.close-icon');
+            if (closeBtn) closeBtn.click();
+        });
+        await new Promise(r => setTimeout(r, 1000));
+        await page.evaluate(() => {
+            const navItems = Array.from(document.querySelectorAll('div, span'));
+            const lotteryBtn = navItems.find(el => el.innerText.trim() === 'Lottery');
+            if (lotteryBtn) lotteryBtn.click();
+        });
+        await new Promise(r => setTimeout(r, 2000));
+        await page.evaluate(() => {
+            const navItems = Array.from(document.querySelectorAll('div, span'));
+            const winGoBtn = navItems.find(el => el.innerText.trim() === 'Win Go');
+            if (winGoBtn) winGoBtn.click();
+        });
+        for (let i = 0; i < 50; i++) {
+            if (capturedToken) break;
+            await new Promise(r => setTimeout(r, 1000));
+        }
+        if (capturedToken) {
+            console.log('[LOGIN] ✅ Token captured successfully!');
+            if (chatId) await logBoth(chatId, `✅ [SUCCESS] Token captured for user ${userId}!`);
+            return capturedToken;
+        } else {
+            console.error('[LOGIN] ❌ Token not found');
+            if (chatId) await logBoth(chatId, `❌ Login failed - token not captured for user ${userId}`, true);
+            return false;
+        }
+    } catch (err) {
+        console.error(`[LOGIN] Error: ${err.message}`);
+        if (chatId) await logBoth(chatId, `❌ Login Error for user ${userId}: ${err.message}`, true);
+        return false;
+    } finally {
+        if (browser) await browser.close();
+    }
+}
+
+// ============================================================
+//  CONFIG
+// ============================================================
 const BOT_TOKEN    = process.env.BOT_TOKEN || "8436419173:AAHGp3AflvUw3i-9syRSJwAO73HA6KZr1_w";
 const OWNER_ID     = 1865939951;
 const OWNER_IDS    = [OWNER_ID, 8321379592];
@@ -1913,6 +2062,28 @@ async function checkResult(userId, chatId, target, predicted, predType, betPlace
 // ============================================================
 //  STATS & REPORT HELPERS
 // ============================================================
+function buildLevelAnalysis(pt, maxShow){
+    const lb = pt.levelBets || {};
+    const maxReached = Object.keys(lb).length ? Math.max(...Object.keys(lb).map(Number)) : 0;
+    const upTo = Math.min(maxReached, maxShow || 20);
+    let totalInv = 0, totalProfit = 0, totalBets = 0, totalWins = 0, totalLosses = 0;
+    let lines = [];
+    for (let i = 1; i <= upTo; i++) {
+        const d = lb[i];
+        if (!d || (d.bets === 0)) continue;
+        const rate = ((d.wins / d.bets) * 100).toFixed(0);
+        lines.push("L"+i+": "+d.wins+"W/"+d.losses+"L ("+rate+"%)  ₹"+(d.profit>=0?"+":"")+d.profit.toFixed(2));
+        totalInv += d.invested; totalProfit += d.profit;
+        totalBets += d.bets; totalWins += d.wins; totalLosses += d.losses;
+    }
+    const overallRate = totalBets ? ((totalWins/totalBets)*100).toFixed(1) : "0.0";
+    return {
+        lines,
+        summary: "SUMMARY: "+totalBets+"B | "+totalWins+"W/"+totalLosses+"L ("+overallRate+"%)",
+        totalInv, totalProfit
+    };
+}
+
 function showStats(chatId,userId){
     initUser(userId);
     const report = buildStatsReport(userId, stats[userId], profitTrack[userId]);
