@@ -1,12 +1,16 @@
-
-//  INLINED MODULE: bet-amounts.js
 const TelegramBot = require('node-telegram-bot-api');
 const axios       = require('axios');
 const crypto      = require('crypto');
 const zlib        = require('zlib');
 const puppeteer   = require('puppeteer');
 const { PNG }     = require('pngjs');
+
+// Ungaloda custom local files integration:
 const { captchaLogin } = require('./captcha-solver-free');
+const betAmounts       = require('./bet-amounts');
+const levelRules       = require('./level-rules');
+const patternRules     = require('./pattern-rules');
+const profitStats      = require('./profit-stats');
 
 // ============================================================
 //  INLINED MODULE: bet-amounts.js
